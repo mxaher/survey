@@ -83,6 +83,38 @@ const ENTITY_TYPES: Array<{ value: string; labelAr: string }> = [
   { value: "campaign_executive.reorder", labelAr: "إعادة ترتيب مسؤولين" },
 ];
 
+const ENTITY_LABELS_AR: Record<string, string> = {
+  campaign: "حملة",
+  question: "سؤال",
+  executive: "مسؤول",
+  system_setting: "إعداد",
+  admin_user: "مستخدم إدارة",
+  campaign_question: "سؤال حملة",
+  campaign_executive: "مسؤول حملة",
+};
+
+/** Map action verbs to semantic tones for the action badge. */
+function actionTone(action: string): {
+  cls: string;
+  icon?: string;
+} {
+  if (action.endsWith(".create") || action.endsWith(".assign"))
+    return { cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200" };
+  if (action.endsWith(".activate") || action.endsWith(".schedule"))
+    return { cls: "bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200" };
+  if (action.endsWith(".deactivate") || action.endsWith(".close") || action.endsWith(".archive"))
+    return { cls: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200" };
+  if (action.endsWith(".delete") || action.endsWith(".remove"))
+    return { cls: "bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-200" };
+  if (action.endsWith(".reorder") || action.endsWith(".copy"))
+    return { cls: "bg-violet-100 text-violet-800 dark:bg-violet-950/40 dark:text-violet-200" };
+  if (action.endsWith(".export"))
+    return { cls: "bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300" };
+  if (action.endsWith(".update") || action.endsWith(".edit"))
+    return { cls: "bg-primary/10 text-primary" };
+  return { cls: "bg-secondary text-secondary-foreground" };
+}
+
 const PAGE_SIZE = 25;
 
 export function AuditView() {
@@ -236,49 +268,70 @@ export function AuditView() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.items.map((it) => (
-                <TableRow key={it.id}>
-                  <TableCell className="whitespace-nowrap text-muted-foreground">
-                    {toRiyadhDisplay(it.createdAt)}
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-medium text-foreground">
-                      {it.adminUser?.displayName ?? "—"}
-                    </span>
-                    {it.adminUser && (
-                      <span className="ms-1 text-xs text-muted-foreground">
-                        ({it.adminUser.role === "SUPER_ADMIN" ? "مدير عام" : "مدير استبيان"})
+              {data.items.map((it) => {
+                const tone = actionTone(it.action);
+                return (
+                  <TableRow
+                    key={it.id}
+                    className="transition-colors hover:bg-muted/40"
+                  >
+                    <TableCell className="whitespace-nowrap text-muted-foreground">
+                      <span
+                        className="tabular-nums"
+                        style={{ fontFeatureSettings: '"tnum" 1' }}
+                      >
+                        {toRiyadhDisplay(it.createdAt)}
                       </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <code className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
-                      {it.action}
-                    </code>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {it.entityType}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {it.entityId ? (
-                      <span className="font-mono text-xs">
-                        {it.entityId.slice(0, 8)}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <span className="font-medium text-foreground">
+                          {it.adminUser?.displayName ?? "—"}
+                        </span>
+                        {it.adminUser && (
+                          <span className="text-xs text-muted-foreground">
+                            {it.adminUser.role === "SUPER_ADMIN" ? "مدير عام" : "مدير استبيان"}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tone.cls}`}
+                      >
+                        {it.action}
                       </span>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {it.campaignId ? (
-                      <span className="font-mono text-xs">
-                        {it.campaignId.slice(0, 8)}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {ENTITY_LABELS_AR[it.entityType] ?? it.entityType}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {it.entityId ? (
+                        <span
+                          className="font-mono text-xs tabular-nums"
+                          style={{ fontFeatureSettings: '"tnum" 1' }}
+                        >
+                          {it.entityId.slice(0, 8)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {it.campaignId ? (
+                        <span
+                          className="font-mono text-xs tabular-nums"
+                          style={{ fontFeatureSettings: '"tnum" 1' }}
+                        >
+                          {it.campaignId.slice(0, 8)}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
 

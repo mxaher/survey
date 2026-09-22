@@ -656,3 +656,113 @@ Task: Privacy bug fix (section-level suppression) + chart PNG download + trend s
 3. Add a "download chart as PNG" button to the campaign-report-view's per-question charts (not just the executive dimension chart).
 4. Add a CSV/PNG download to the trend view (currently only the campaign report has exports).
 5. Consider adding a "participation rate over time" line chart to the trend view (distinct evaluators per campaign as a line).
+
+---
+Task ID: 8 (cron-triggered review round 4)
+Agent: main (orchestrator, cron job 404970)
+Task: DnD verification + trend CSV export + participation rate over time chart + audit view polish + empty-state animation.
+
+## Current project status (assessment)
+- Round 3 (Task 7) shipped: privacy bug fix (distinct submitters), chart PNG download, trend status filter, participation rate metric.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 3 worklog flagged 5 priorities for round 4; this round addressed 4 of them.
+
+## Round 4 goals
+1. **Verify DnD-kit reorder persists** on a draft campaign (round 3 deferred this).
+2. **Audit campaign-report-view future-section QuestionRow** for per-question suppression consistency (round 3 deferred this).
+3. **Add CSV export to trend view** (round 3 only had campaign-level CSV/XLSX).
+4. **Add participation rate over time line chart** to trend view (round 3 priority #5).
+5. **Styling polish**: audit view semantic action badges + empty-state animation + page transitions.
+
+## Completed modifications
+
+### 1. DnD-kit reorder verification (QA)
+**Verified end-to-end on a real draft campaign:**
+- Created a new draft campaign "حملة اختبار DnD" via the UI.
+- Assigned 5 questions via the API (`POST /api/admin/campaigns/:id/questions`).
+- Opened the campaign-detail → questions tab. DnD handles ("اسحب لإعادة الترتيب") were enabled (not disabled like on the active campaign).
+- Initial order: L01 (order 0), E01, ...
+- Dragged the first handle to the second position via `agent-browser drag @e230 @e234`.
+- Order changed: E01 → order 0, L01 → second. Optimistic UI update worked.
+- Reloaded the page → order PERSISTED (E01 still first, L01 still second). Backend POST `/reorder` confirmed in dev.log (200 response).
+- Cleaned up the test campaign via `scripts/cleanup-test-campaign.ts`.
+**Result: DnD-kit is fully functional end-to-end.** No code changes needed — just verification.
+
+### 2. Per-question suppression audit (QA)
+Audited `src/components/admin/reports/campaign-report-view.tsx` QuestionRow (lines 480-505):
+- The shared `QuestionRow` component handles `perQuestionSuppressed` consistently for ALL section types (env + future + exec).
+- When `perQuestionSuppressed === true`: shows Lock icon (not ChevronDown), displays "أقل من حد الإخفاء، تم إخفاء التفاصيل" message, and skips the collapsible content (`hasData && !question.perQuestionSuppressed`).
+- The `isFuture` flag only affects the unsuppressed display (shows count-only for future vs avg+favorable for env), NOT the suppression behavior.
+**Result: per-question suppression is consistent across all section types.** No code changes needed.
+
+### 3. Trend CSV export (new feature)
+- **`src/app/api/admin/reports/trend/export/route.ts`** (new) — `GET /api/admin/reports/trend/export?status=all|active|closed`. Exports the trend/comparison view as a CSV (UTF-8 BOM, CRLF, Excel-compatible). One row per campaign with:
+  - Campaign name, status, activation date
+  - Participation counts (env / future / exec evals / distinct evaluators)
+  - Participation rate (%)
+  - Total responses
+  - Per-dimension averages (9 leadership dimensions as columns)
+- Respects each campaign's per-exec threshold. NO employee identifiers — aggregate numbers only. Audited as `report.export` with `scope: "trend"`.
+- **`src/components/admin/reports/trend-report-view.tsx`** — Added "تصدير CSV" button (Download icon) in the header actions. Disabled when no campaigns. Triggers `window.location.href = /api/admin/reports/trend/export?status=...`. Respects the current status filter.
+- Verified: 712-byte CSV with Arabic headers + 1 data row (6 env submissions, 6 future, 36 exec evals, 6 evaluators, 12% participation, 1396 total responses, 9 dimension averages 3.81–4.17).
+
+### 4. Participation rate over time line chart (new feature)
+- **`src/components/admin/reports/trend-report-view.tsx`** — Added a new Card "معدل المشاركة عبر الحملات" after the dimension trend chart. Renders a Recharts `LineChart` with:
+  - X-axis: campaign titles (rotated -20° for readability).
+  - Y-axis: 0–100% with `%` suffix.
+  - A single `Line` (dataKey="rate") with strokeWidth=3, dots r=5, activeDot r=7.
+  - A `ReferenceLine` at y=50 with "هدف 50%" label (dashed amber).
+  - Top-positioned labels showing `${rate}%` per point.
+  - Description showing the eligible count (or a hint to set it via System Settings).
+  - Tooltip with Arabic formatter.
+- Fixed a runtime crash: the initial implementation used a render-prop `label={({payload,x,y}) => <text>...</text>}` which crashed with "Cannot read properties of undefined (reading 'rate')". Replaced with a static label config object: `label={{ position: "top", fill: ..., formatter: (v) => \`${v}%\` }}`.
+
+### 5. Audit view polish (styling)
+- **`src/components/admin/audit/audit-view.tsx`** —
+  - Added `actionTone(action)` function mapping action verbs to semantic colors:
+    - `.create`/`.assign` → emerald (green = new)
+    - `.activate`/`.schedule` → sky (blue = start)
+    - `.deactivate`/`.close`/`.archive` → amber (yellow = stop)
+    - `.delete`/`.remove` → rose (red = destructive)
+    - `.reorder`/`.copy` → violet (purple = structural)
+    - `.export` → slate (grey = read-only)
+    - `.update`/`.edit` → primary (navy = modify)
+    - default → secondary
+  - Action badges now render as `rounded-full` pills with the semantic color.
+  - Added `ENTITY_LABELS_AR` map → entity type column now shows Arabic ("حملة" instead of "campaign").
+  - User cell now stacks name + role on two lines (was inline with parentheses).
+  - All numeric/date cells use `tabular-nums` + `font-feature-settings: "tnum" 1`.
+  - Table rows get `hover:bg-muted/40` transition.
+
+### 6. Empty-state + page-transition polish (styling)
+- **`src/components/shared/empty-state.tsx`** — Rewrote:
+  - Icon now sits in a `h-16 w-16 rounded-2xl bg-muted/60` chip (was bare).
+  - Title is `text-lg font-semibold` (was `font-semibold`).
+  - Container is `py-16` (was `py-12`) for more breathing room.
+  - Added `animate-in fade-in-50 duration-300` entrance animation.
+- **`src/components/admin/admin-app.tsx`** — The `<main>` element now has:
+  - A `key={tab-sub-id}` so React remounts on navigation (triggers the entrance animation).
+  - `animate-in fade-in-50 duration-200` for a subtle page-transition fade.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all 9 view combinations return HTTP 200.
+- **DnD verified**: drag → optimistic UI update → reload → order persisted (backend POST /reorder confirmed).
+- **Per-question suppression audited**: QuestionRow handles env + future + exec contexts consistently; Lock icon + "أقل من حد الإخفاء" message renders for all suppressed questions regardless of section type.
+- **Trend CSV export verified**: 712-byte file with Arabic headers + per-dimension averages.
+- **Participation rate chart verified**: renders with title, eligible count (50), "هدف 50%" reference line, and percentage labels. No runtime crash after the label-prop fix.
+- **Audit view polish verified**: action badges render as semantic-colored pills, entity types in Arabic, rows have hover bg.
+- agent-browser walkthrough confirmed all views render without errors.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Chart PNG on campaign-report per-question charts** — round 3 priority #3 (add PNG download to per-question charts, not just the exec dimension chart) still deferred.
+- **Trend XLSX export** — only CSV is supported on the trend view; XLSX would be a nice addition.
+
+## Priority recommendations for next round
+1. Add XLSX export to the trend view (parallel to the campaign-report XLSX).
+2. Add chart PNG download to the campaign-report per-question charts (round 3 deferred).
+3. Add a "density toggle" to the campaigns list (compact/comfortable) — useful when there are many campaigns.
+4. Add a "recent activity" widget to the dashboard showing the last 5 audit entries (quick admin overview).
+5. Consider adding a "campaign health" indicator to the campaigns list (e.g., a colored dot showing participation rate vs threshold).

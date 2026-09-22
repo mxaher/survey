@@ -280,7 +280,12 @@ export function AdminApp() {
             {navList}
           </div>
         </aside>
-        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8">{content}</main>
+        <main
+          key={`${tab}-${sub ?? ""}-${id ?? ""}`}
+          className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 animate-in fade-in-50 duration-200"
+        >
+          {content}
+        </main>
       </div>
       <footer className="border-t border-border bg-card mt-auto">
         <div className="mx-auto max-w-7xl px-4 py-3 text-xs text-muted-foreground text-center">

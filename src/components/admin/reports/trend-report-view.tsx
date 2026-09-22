@@ -31,6 +31,7 @@ import {
   MessageSquareText,
   CalendarClock,
   ArrowRight,
+  Download,
 } from "lucide-react";
 import {
   Line,
@@ -248,14 +249,27 @@ export function TrendReportView() {
         description="تحليل مقارن لأبعاد القيادة عبر الحملات النشطة والمغلقة، مع احترام حد الإخفاء لكل حملة."
         eyebrow="تحليل عبر الحملات"
         actions={
-          <Button
-            variant="ghost"
-            onClick={() => router.push("/?view=admin&tab=reports")}
-            className="min-h-11 no-print"
-          >
-            <ArrowRight className="h-4 w-4" />
-            قائمة التقارير
-          </Button>
+          <div className="flex flex-wrap gap-2 no-print">
+            <Button
+              variant="outline"
+              onClick={() => {
+                window.location.href = `/api/admin/reports/trend/export?status=${encodeURIComponent(statusFilter)}`;
+              }}
+              className="min-h-11"
+              disabled={campaigns.length === 0}
+            >
+              <Download className="h-4 w-4" />
+              تصدير CSV
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => router.push("/?view=admin&tab=reports")}
+              className="min-h-11"
+            >
+              <ArrowRight className="h-4 w-4" />
+              قائمة التقارير
+            </Button>
+          </div>
         }
       />
 
@@ -510,6 +524,100 @@ export function TrendReportView() {
             <p className="mt-2 text-xs text-muted-foreground">
               الخط المتقطع عند الدرجة 3 يمثل الحد الأوسط (محايد). النقاط فوق
               الخط تشير إلى تقييمات إيجابية، وأسفله إلى تقييمات سلبية.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Participation rate over time chart */}
+      {campaigns.length >= 1 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">
+              معدل المشاركة عبر الحملات
+            </CardTitle>
+            <CardDescription>
+              نسبة المُقيِّمين إلى إجمالي الموظفين المؤهلين في كل حملة.
+              {data?.data?.eligibleCount
+                ? ` (إجمالي المؤهلين: ${data.data.eligibleCount})`
+                : " (لم يتم تحديد عدد الموظفين المؤهلين — يمكن ضبطه من إعدادات النظام)"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="h-80 w-full" dir="rtl">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={campaigns.map((c) => ({
+                    name: c.campaign.titleAr,
+                    rate:
+                      c.participationRate !== null &&
+                      c.participationRate !== undefined
+                        ? Number(c.participationRate)
+                        : 0,
+                    evaluators: c.distinctEvaluators,
+                  }))}
+                  margin={{ top: 16, right: 24, bottom: 60, left: 8 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 11 }}
+                    interval={0}
+                    angle={-20}
+                    textAnchor="end"
+                    height={60}
+                  />
+                  <YAxis
+                    domain={[0, 100]}
+                    tick={{ fontSize: 12 }}
+                    allowDecimals={false}
+                    tickFormatter={(v) => `${v}%`}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      fontSize: 12,
+                    }}
+                    formatter={(v: number, name: string) => {
+                      if (name === "rate")
+                        return [`${Number(v).toFixed(2)}%`, "معدل المشاركة"];
+                      return [v, "عدد المُقيِّمين"];
+                    }}
+                  />
+                  <ReferenceLine
+                    y={50}
+                    stroke="var(--chart-2)"
+                    strokeDasharray="4 4"
+                    label={{
+                      value: "هدف 50%",
+                      position: "top",
+                      fill: "var(--chart-2)",
+                      fontSize: 11,
+                      fontWeight: 600,
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="rate"
+                    stroke="var(--chart-1)"
+                    strokeWidth={3}
+                    dot={{ r: 5 }}
+                    activeDot={{ r: 7 }}
+                    label={{
+                      position: "top",
+                      fill: "var(--foreground)",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      formatter: (v: number) => `${Number(v).toFixed(1)}%`,
+                    }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              الخط المتقطع عند 50% يمثل الهدف المرجعي. تشير القيم المنخفضة إلى
+              ضرورة تعزيز التواصل الداخلي قبل إطلاق الحملة التالية.
             </p>
           </CardContent>
         </Card>
