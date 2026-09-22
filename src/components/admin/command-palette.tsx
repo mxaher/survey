@@ -33,6 +33,7 @@ import {
   ShieldCheck,
   ArrowLeft,
   CornerDownLeft,
+  Trash2,
 } from "lucide-react";
 import {
   Dialog,
@@ -361,10 +362,29 @@ export function CommandPalette() {
               اختيار
             </span>
           </div>
-          <span className="flex items-center gap-1">
-            <kbd className="inline-flex h-4 items-center rounded border border-border bg-muted px-1 font-mono">⌘K</kbd>
-            فتح/إغلاق
-          </span>
+          <div className="flex items-center gap-3">
+            {recent.length > 0 && query.length < 2 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRecent([]);
+                  try {
+                    window.localStorage.removeItem("almrshd-recent");
+                  } catch {
+                    // non-fatal
+                  }
+                }}
+                className="text-[10px] text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"
+              >
+                <Trash2 className="h-3 w-3" />
+                مسح السجل
+              </button>
+            )}
+            <span className="flex items-center gap-1">
+              <kbd className="inline-flex h-4 items-center rounded border border-border bg-muted px-1 font-mono">⌘K</kbd>
+              فتح/إغلاق
+            </span>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

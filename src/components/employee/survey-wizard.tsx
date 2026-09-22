@@ -43,6 +43,7 @@ import {
   ChevronLeft,
   ShieldCheck,
   Lock,
+  Keyboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -503,6 +504,60 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
     onFinish();
   };
 
+  // ─── Keyboard navigation (ArrowLeft = next, ArrowRight = back in RTL) ──
+  // Only fires when the user is NOT focused in an input/textarea/select/radio
+  // (so typing in those elements doesn't trigger navigation). We use the
+  // document activeElement's tagName + role to check.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const el = document.activeElement;
+      if (el) {
+        const tag = el.tagName.toLowerCase();
+        if (tag === "input" || tag === "select" || tag === "textarea") return;
+        if (
+          el.getAttribute("role") === "radio" ||
+          el.getAttribute("type") === "radio" ||
+          el.getAttribute("type") === "checkbox"
+        )
+          return;
+      }
+      if (e.key === "ArrowLeft") {
+        // In RTL, ArrowLeft = forward.
+        e.preventDefault();
+        if (step < 4) {
+          if (step === 1) {
+            if (ps?.environmentSubmitted || envStepComplete) {
+              handleEnvSubmit();
+            }
+          } else if (step === 2) {
+            if (!execStepReady && !singleEvalDone) return;
+            goNext();
+          } else if (step === 3) {
+            if (ps?.futureSubmitted || futureStepComplete) {
+              handleFutureSubmit();
+            }
+          }
+        }
+      } else if (e.key === "ArrowRight") {
+        // In RTL, ArrowRight = back.
+        e.preventDefault();
+        if (step > 1) goBack();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [
+    step,
+    ps,
+    envStepComplete,
+    execStepReady,
+    singleEvalDone,
+    futureStepComplete,
+    // handleEnvSubmit + handleFutureSubmit are stable enough (they close
+    // over the same state) — including them would cause re-subscribes on
+    // every render. The dependency array above captures the gating state.
+  ]);
+
   // ─── Loading / error UI helpers ──────────────────────────────────────
   if (participationStatusQuery.isLoading || executivesQuery.isLoading) {
     return <WizardSkeleton />;
@@ -719,6 +774,30 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
           ) : null}
         </div>
       ) : null}
+
+      {/* Keyboard shortcuts hint — desktop only */}
+      {step < 4 && (
+        <div className="hidden md:flex items-center justify-center gap-4 mx-auto max-w-3xl pt-3 text-[11px] text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <Keyboard className="h-3.5 w-3.5" />
+            اختصارات:
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="inline-flex h-5 items-center rounded border border-border bg-muted px-1.5 font-mono text-[10px]">1-5</kbd>
+            اختيار درجة
+          </span>
+          <span className="text-border">·</span>
+          <span className="flex items-center gap-1">
+            <kbd className="inline-flex h-5 items-center rounded border border-border bg-muted px-1.5 font-mono text-[10px]">←</kbd>
+            التالي
+          </span>
+          <span className="text-border">·</span>
+          <span className="flex items-center gap-1">
+            <kbd className="inline-flex h-5 items-center rounded border border-border bg-muted px-1.5 font-mono text-[10px]">→</kbd>
+            السابق
+          </span>
+        </div>
+      )}
     </div>
   );
 }

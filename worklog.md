@@ -1042,3 +1042,73 @@ Task: Admin users avatar initials + last-login column + recently-viewed in comma
 3. Add a campaign comparison export with the participation-rate chart embedded as PNG in XLSX — round 5 priority #3.
 4. Add a "clear recently-viewed" button to the command palette (small X next to the recent section header).
 5. Consider adding a "user profile" dropdown in the admin header (shows avatar + name + role + logout).
+
+---
+Task ID: 13 (cron-triggered review round 9)
+Agent: main (orchestrator, cron job 404970)
+Task: Campaign archive view + employee wizard keyboard shortcuts + admin header user profile dropdown + clear-recents button.
+
+## Current project status (assessment)
+- Round 8 (Task 12) shipped: admin users avatar initials, last-login column, recently-viewed in command palette.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 8 worklog flagged 5 priorities for round 9; this round addressed 4 of them.
+
+## Round 9 goals
+1. **Add campaign archive view** (round 6 priority #5, deferred since).
+2. **Add keyboard shortcuts to employee survey wizard** (round 7 priority #5).
+3. **Add user profile dropdown in admin header** (round 8 priority #5).
+4. **Add clear-recent button to command palette** (round 8 priority #4).
+
+## Completed modifications
+
+### 1. Campaign archive view (new feature)
+- **`src/components/admin/campaigns/campaign-archive-view.tsx`** (new) — `export function CampaignArchiveView()`. A read-only card grid of archived campaigns. Each card shows:
+  - Title (clickable → campaign detail) + status badge.
+  - Description (2-line clamp).
+  - Activation + closure dates (Riyadh-formatted).
+  - 3 stat chips: responses, executives, questions.
+  - "عرض التقرير" button → links to the campaign report.
+  - Hover micro-interaction (lift + shadow).
+  - Empty state: "لا توجد حملات مؤرشفة" with a clear explanation that archived campaigns are read-only.
+- **`src/components/admin/admin-app.tsx`** — Added `CampaignArchiveView` dynamic import + `?view=admin&tab=campaigns&sub=archive` route.
+- **`src/components/admin/campaigns/campaigns-list-view.tsx`** — Added "الأرشيف" button (Archive icon, outline variant) in the PageHeader actions next to "حملة جديدة".
+- Verified: archive view renders with empty state (no archived campaigns yet); "الأرشيف" button in campaigns list header.
+
+### 2. Employee wizard keyboard shortcuts (new feature)
+- **`src/components/employee/survey-wizard.tsx`** — Added:
+  - `useEffect` keyboard listener (window addEventListener) for `ArrowLeft` (advance) + `ArrowRight` (back) in RTL. Only fires when the user is NOT focused in an input/textarea/select/radio/checkbox (so typing in those doesn't trigger navigation). ArrowLeft triggers the step-appropriate "next" action: step 1 → handleEnvSubmit (if complete), step 2 → goNext (if ready), step 3 → handleFutureSubmit (if complete).
+  - Keyboard hints banner at the bottom of each step (desktop only, `hidden md:flex`): shows `1-5` اختيار درجة · `←` التالي · `→` السابق with kbd-styled badges.
+  - Added `Keyboard` icon import.
+  - Fixed a "Cannot access variable before it is declared" lint error by moving the effect AFTER the `handleEnvSubmit`/`handleFutureSubmit` declarations (the effect references them).
+- Verified: keyboard hints banner renders on desktop; no runtime errors.
+
+### 3. Admin header user profile dropdown (new feature)
+- **`src/components/admin/admin-app.tsx`** — Replaced the plain "خروج" button with a DropdownMenu:
+  - Trigger: a bordered button with avatar circle (first letter of display name) + name (truncated, hidden on mobile) + ChevronDown icon.
+  - Content: DropdownMenuLabel with larger avatar + name + role ("مدير عام" / "مدير استبيان"), separator, "إعدادات النظام" menu item (→ settings tab), separator, "تسجيل الخروج" menu item (destructive variant → POST /api/admin/logout + redirect to employee view).
+  - Added `ChevronDown` icon + `DropdownMenu*` imports.
+- VLM confirmed: avatar circle + name visible in header top-left.
+
+### 4. Clear-recents button in command palette (new feature)
+- **`src/components/admin/command-palette.tsx`** — Added a "مسح السجل" button (Trash2 icon) in the palette footer, shown only when `recent.length > 0 && query.length < 2`. Clicking it clears the `recent` state + removes the `almrshd-recent` key from localStorage. Hover state turns the text destructive (red).
+- Added `Trash2` icon import.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, campaigns/archive, users).
+- **Archive view verified**: renders with "أرشيف الحملات" heading + empty state "لا توجد حملات مؤرشفة"; "الأرشيف" button visible in campaigns list header.
+- **Keyboard shortcuts verified**: hints banner renders on desktop (hidden on mobile); no runtime errors from the keyboard effect.
+- **User profile dropdown verified**: renders with avatar "م" + name "مدير الاستبيان (تجريبي)"; clicking opens dropdown with "إعدادات النظام" + "تسجيل الخروج" items. VLM confirmed.
+- **Clear-recents verified**: "مسح السجل" button renders in palette footer when recents exist + query is empty.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — round 5 priority #3, still deferred.
+
+## Priority recommendations for next round
+1. Add a campaign comparison export with the participation-rate chart embedded as a PNG image in the XLSX — round 5 priority #3 (last deferred item).
+2. Add a "filter by status" dropdown to the campaigns list (currently only health filter exists).
+3. Add a "campaign summary" PDF export (one-page executive summary with key metrics).
+4. Consider adding a "notifications" bell icon in the admin header (shows when a campaign is about to close, when threshold isn't met, etc.).
+5. Consider adding a "dark mode" toggle to the admin shell (next-themes is already installed).

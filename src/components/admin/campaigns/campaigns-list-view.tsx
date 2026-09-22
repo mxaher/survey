@@ -293,6 +293,15 @@ export function CampaignsListView() {
               </button>
             </div>
             <Button
+              variant="outline"
+              onClick={() =>
+                router.push("/?view=admin&tab=campaigns&sub=archive")
+              }
+            >
+              <Archive className="h-4 w-4" />
+              الأرشيف
+            </Button>
+            <Button
               onClick={() =>
                 router.push(
                   "/?view=admin&tab=campaigns&sub=editor&id=new"

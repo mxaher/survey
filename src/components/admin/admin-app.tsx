@@ -37,7 +37,16 @@ import {
   ClipboardList,
   LogOut,
   Search,
+  ChevronDown,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -65,6 +74,10 @@ const CampaignEditorView = dynamic(
 );
 const CampaignDetailView = dynamic(
   () => import("@/components/admin/campaign-detail/campaign-detail-view").then((m) => m.CampaignDetailView),
+  { ssr: false }
+);
+const CampaignArchiveView = dynamic(
+  () => import("@/components/admin/campaigns/campaign-archive-view").then((m) => m.CampaignArchiveView),
   { ssr: false }
 );
 const QuestionsListView = dynamic(
@@ -164,6 +177,7 @@ export function AdminApp() {
     case "campaigns":
       if (sub === "editor" && id) content = <CampaignEditorView campaignId={id} />;
       else if (sub === "detail" && id) content = <CampaignDetailView campaignId={id} />;
+      else if (sub === "archive") content = <CampaignArchiveView />;
       else content = <CampaignsListView />;
       break;
     case "questions":
@@ -280,17 +294,67 @@ export function AdminApp() {
           <ClipboardList className="h-3.5 w-3.5" />
           عرض تجربة الموظف
         </a>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={async () => {
-            await fetch("/api/admin/logout", { method: "POST" });
-            window.location.href = "/?view=employee";
-          }}
-        >
-          <LogOut className="h-4 w-4 ml-1" />
-          خروج
-        </Button>
+        {/* User profile dropdown — avatar + name + role + logout */}
+        {admin?.data && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-lg border border-border bg-card px-2 py-1.5 text-xs font-medium transition-colors hover:bg-accent min-h-9"
+              >
+                <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold">
+                  {(admin.data.displayName ?? admin.data.externalId)
+                    .trim()
+                    .charAt(0)}
+                </span>
+                <span className="hidden sm:inline max-w-32 truncate">
+                  {admin.data.displayName ?? admin.data.externalId}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="flex items-center gap-2">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                  {(admin.data.displayName ?? admin.data.externalId)
+                    .trim()
+                    .charAt(0)}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    {admin.data.displayName ?? admin.data.externalId}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {admin.data.role === "SUPER_ADMIN"
+                      ? "مدير عام"
+                      : "مدير استبيان"}
+                  </p>
+                </div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="cursor-pointer"
+                onClick={() =>
+                  router.push("/?view=admin&tab=settings")
+                }
+              >
+                <Settings className="h-4 w-4 ml-2" />
+                إعدادات النظام
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="cursor-pointer text-destructive focus:text-destructive"
+                onClick={async () => {
+                  await fetch("/api/admin/logout", { method: "POST" });
+                  window.location.href = "/?view=employee";
+                }}
+              >
+                <LogOut className="h-4 w-4 ml-2" />
+                تسجيل الخروج
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </header>
   );
