@@ -51,6 +51,7 @@ export const GET = apiHandler(
         where: { campaignId, responseType: "future" },
         select: {
           questionSnapshotId: true,
+          responseGroupId: true,
           selectedValue: true,
         },
       }),
@@ -58,12 +59,21 @@ export const GET = apiHandler(
 
     const threshold = campaign.minimumReportingThreshold;
 
-    if (responses.length < threshold) {
+    // Whole-section suppression: based on DISTINCT submitters
+    // (responseGroupId), NOT raw response rows. One future submission can
+    // produce multiple response rows (one per selected value for
+    // multi-choice questions), so `responses.length` over-counts.
+    const distinctSubmitters = new Set(
+      responses.map((r) => r.responseGroupId)
+    ).size;
+
+    if (distinctSubmitters < threshold) {
       return ok({
         suppressed: true,
         message: MESSAGES.belowThreshold,
         threshold,
         totalResponses: responses.length,
+        distinctSubmitters,
         questions: [],
       });
     }
@@ -146,6 +156,7 @@ export const GET = apiHandler(
         enableFutureSurvey: campaign.enableFutureSurvey,
       },
       totalResponses: responses.length,
+      distinctSubmitters,
       questions,
     });
   }

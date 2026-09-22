@@ -63,6 +63,33 @@ export const GET = apiHandler(async () => {
       db.response.count(),
     ]);
 
+  // ─── Participation rate ────────────────────────────────────────────
+  // eligible_employees_count is a SystemSetting (admin-configurable).
+  // distinct evaluators = distinct employeeHmac values with at least one
+  // submitted participation_ledger row across active/closed campaigns.
+  // participation rate = distinct evaluators / eligible × 100.
+  // Both numbers are aggregates — no HMAC values are returned.
+  const eligibleSetting = await db.systemSetting.findUnique({
+    where: { key: "eligible_employees_count" },
+  });
+  const eligibleCount = eligibleSetting
+    ? parseInt(eligibleSetting.valueAr, 10) || 0
+    : 0;
+
+  const distinctEvaluators = await db.participationLedger.groupBy({
+    by: ["employeeHmac"],
+    where: {
+      status: "submitted",
+      campaign: { status: { in: ["active", "closed"] } },
+    },
+    _count: { _all: true },
+  });
+  const distinctEvaluatorCount = distinctEvaluators.length;
+  const participationRate =
+    eligibleCount > 0
+      ? Math.round((distinctEvaluatorCount / eligibleCount) * 10000) / 100
+      : null;
+
   // Latest campaign snapshot (most recent by createdAt).
   let latestCampaign: {
     id: string;
@@ -216,6 +243,11 @@ export const GET = apiHandler(async () => {
       },
       latestCampaign,
       orgDimensions,
+      participation: {
+        eligibleCount,
+        distinctEvaluators: distinctEvaluatorCount,
+        rate: participationRate,
+      },
     });
   }
 
@@ -229,5 +261,10 @@ export const GET = apiHandler(async () => {
     },
     latestCampaign,
     orgDimensions: [],
+    participation: {
+      eligibleCount,
+      distinctEvaluators: distinctEvaluatorCount,
+      rate: participationRate,
+    },
   });
 });

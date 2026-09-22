@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 interface EnvResponseRow {
   questionSnapshotId: string;
+  responseGroupId: string;
   selectedValue: string;
   selectedScore: number | null;
 }
@@ -64,6 +65,7 @@ export const GET = apiHandler(
         where: { campaignId, responseType: "environment" },
         select: {
           questionSnapshotId: true,
+          responseGroupId: true,
           selectedValue: true,
           selectedScore: true,
         },
@@ -72,13 +74,25 @@ export const GET = apiHandler(
 
     const threshold = campaign.minimumReportingThreshold;
 
-    // Whole-section suppression.
-    if (responses.length < threshold) {
+    // Whole-section suppression: based on DISTINCT submitters
+    // (responseGroupId), NOT raw response rows. One environment submission
+    // produces N response rows (one per question), so `responses.length`
+    // over-counts by a factor of N. Using distinct responseGroupId gives
+    // the true number of employees who submitted this section — which is
+    // what the threshold is meant to protect (spec §16: "Minimum sample
+    // size: default 5 ... Below threshold: hide detailed results ... to
+    // protect participant confidentiality").
+    const distinctSubmitters = new Set(
+      responses.map((r) => r.responseGroupId)
+    ).size;
+
+    if (distinctSubmitters < threshold) {
       return ok({
         suppressed: true,
         message: MESSAGES.belowThreshold,
         threshold,
         totalResponses: responses.length,
+        distinctSubmitters,
         questions: [],
       });
     }
@@ -176,6 +190,7 @@ export const GET = apiHandler(
         enableEnvironmentSurvey: campaign.enableEnvironmentSurvey,
       },
       totalResponses: responses.length,
+      distinctSubmitters,
       questions,
     });
   }

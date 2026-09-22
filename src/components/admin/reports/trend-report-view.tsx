@@ -19,6 +19,7 @@
  * Empty state: when fewer than 1 active/closed campaign exists, shows a
  * helpful "no comparable campaigns yet" message.
  */
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BarChart3,
@@ -50,6 +51,13 @@ import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Card,
   CardContent,
@@ -101,10 +109,14 @@ type TrendCampaign = {
   futureSubmittedCount: number;
   executiveEvaluationCount: number;
   distinctEvaluators: number;
+  participationRate?: number | null;
   dimensionAverages: DimensionAvg[];
 };
 
-type TrendData = { campaigns: TrendCampaign[] };
+type TrendData = {
+  campaigns: TrendCampaign[];
+  eligibleCount?: number;
+};
 
 // Chart palette — distinct colors per campaign so the line chart is readable.
 const CAMPAIGN_COLORS = [
@@ -120,9 +132,14 @@ const CAMPAIGN_COLORS = [
 
 export function TrendReportView() {
   const router = useRouter();
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+
   const { data, isLoading, isError } = useQuery<Envelope<TrendData>>({
-    queryKey: ["admin-report-trend"],
-    queryFn: () => fetchJson<Envelope<TrendData>>("/api/admin/reports/trend"),
+    queryKey: ["admin-report-trend", statusFilter],
+    queryFn: () =>
+      fetchJson<Envelope<TrendData>>(
+        `/api/admin/reports/trend?status=${encodeURIComponent(statusFilter)}`
+      ),
   });
 
   const campaigns = data?.data?.campaigns ?? [];
@@ -144,11 +161,44 @@ export function TrendReportView() {
         <PageHeader
           title="مقارنة الحملات والاتجاهات"
           description="تحليل مقارن لأبعاد القيادة عبر الحملات النشطة والمغلقة."
+          actions={
+            <Button
+              variant="ghost"
+              onClick={() => router.push("/?view=admin&tab=reports")}
+              className="min-h-11 no-print"
+            >
+              <ArrowRight className="h-4 w-4" />
+              قائمة التقارير
+            </Button>
+          }
         />
+        <div className="flex items-center gap-3 no-print">
+          <span className="text-sm text-muted-foreground">تصفية حسب الحالة:</span>
+          <Select value={statusFilter} onValueChange={setStatusFilter} dir="rtl">
+            <SelectTrigger className="w-48" aria-label="تصفية حسب حالة الحملة">
+              <SelectValue placeholder="كل الحالات" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">الكل (نشطة + مغلقة)</SelectItem>
+              <SelectItem value="active">النشطة فقط</SelectItem>
+              <SelectItem value="closed">المغلقة فقط</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <EmptyState
           icon={<GitCompareArrows className="h-8 w-8" />}
-          title="لا توجد حملات قابلة للمقارنة بعد"
-          description="تظهر هذه الصفحة تلقائيًا بمجرد وجود حملة نشطة أو مغلقة واحدة على الأقل ببيانات تقييم."
+          title={
+            statusFilter === "all"
+              ? "لا توجد حملات قابلة للمقارنة بعد"
+              : statusFilter === "active"
+              ? "لا توجد حملات نشطة"
+              : "لا توجد حملات مغلقة"
+          }
+          description={
+            statusFilter === "all"
+              ? "تظهر هذه الصفحة تلقائيًا بمجرد وجود حملة نشطة أو مغلقة واحدة على الأقل ببيانات تقييم."
+              : `جرّب تغيير عامل التصفية لعرض حملات بحالة أخرى.`
+          }
         />
       </div>
     );
@@ -209,6 +259,21 @@ export function TrendReportView() {
         }
       />
 
+      {/* Status filter */}
+      <div className="flex items-center gap-3 no-print">
+        <span className="text-sm text-muted-foreground">تصفية حسب الحالة:</span>
+        <Select value={statusFilter} onValueChange={setStatusFilter} dir="rtl">
+          <SelectTrigger className="w-48" aria-label="تصفية حسب حالة الحملة">
+            <SelectValue placeholder="كل الحالات" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">الكل (نشطة + مغلقة)</SelectItem>
+            <SelectItem value="active">النشطة فقط</SelectItem>
+            <SelectItem value="closed">المغلقة فقط</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       {/* Aggregate stat cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -261,6 +326,7 @@ export function TrendReportView() {
                   <TableHead>مشاركات البيئة المستقبلية</TableHead>
                   <TableHead>تقييمات المسؤولين</TableHead>
                   <TableHead>المُقيِّمون</TableHead>
+                  <TableHead>معدل المشاركة</TableHead>
                   <TableHead>إجمالي الإجابات</TableHead>
                   <TableHead className="text-center">التقرير</TableHead>
                 </TableRow>
@@ -310,6 +376,31 @@ export function TrendReportView() {
                       >
                         {c.distinctEvaluators}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {c.participationRate !== null &&
+                      c.participationRate !== undefined ? (
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="font-semibold tabular-nums"
+                            style={{ fontFeatureSettings: '"tnum" 1' }}
+                          >
+                            {c.participationRate}%
+                          </span>
+                          <div className="relative h-1.5 w-16 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="absolute inset-y-0 right-0 rounded-full bg-primary/70"
+                              style={{
+                                width: `${Math.min(100, c.participationRate)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">
+                          غير محدد
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <span

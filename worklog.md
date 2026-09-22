@@ -577,3 +577,82 @@ Audited every `ArrowLeft` / `ArrowRight` usage across admin + employee component
 3. Add a "download chart as PNG" button to the executive report chart (Recharts supports this via `getCanvasBase64`).
 4. Add a campaign status filter to the trend view (so you can compare only closed campaigns, excluding active).
 5. Consider adding a "participation rate" metric to the trend view (distinct evaluators / total eligible employees) — requires knowing the eligible employee count, which isn't currently tracked.
+
+---
+Task ID: 7 (cron-triggered review round 3)
+Agent: main (orchestrator, cron job 404970)
+Task: Privacy bug fix (section-level suppression) + chart PNG download + trend status filter + participation rate metric.
+
+## Current project status (assessment)
+- Round 2 (Task 6) shipped: per-question suppression consistency, campaign trend view, print CSS, RTL arrow audit.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 2 worklog flagged 5 priorities for round 3; this round addressed 4 of them + found + fixed a privacy bug.
+
+## Round 3 goals
+1. **[BUG FIX — privacy]** Section-level suppression in env + future endpoints used raw response row count instead of distinct submitter count.
+2. **Feature: chart PNG download** on executive report (Recharts SVG → canvas → PNG).
+3. **Feature: campaign status filter** on trend view (all / active / closed).
+4. **Feature: participation rate metric** on dashboard + trend (requires eligible employees SystemSetting).
+
+## Completed modifications
+
+### 1. [BUG FIX] Section-level suppression uses distinct submitters
+**Privacy bug found during QA:** The environment + future report endpoints used `responses.length` (raw Response row count) for section-level suppression. But one environment submission produces N response rows (one per question), so `responses.length` over-counts submitters by a factor of N. With 1 submitter answering 10 env questions, `responses.length=10 ≥ threshold=5` → section appeared unsuppressed, but really only 1 person submitted. Per-question suppression caught the leak, but the UX was confusing (every question locked, section header said "not suppressed").
+
+**Fix:** Both endpoints now compute `distinctSubmitters = new Set(responses.map(r => r.responseGroupId)).size` and use that for the section-level check. Added `responseGroupId` to the Prisma `select`. Returns `distinctSubmitters` in both the suppressed and unsuppressed response shapes.
+
+- **`src/app/api/admin/reports/[campaignId]/environment/route.ts`** — Fixed. Verified: with 1 submitter → `suppressed: true` (correct). Seeded 5 more env submissions → `suppressed: false, distinctSubmitters: 6` (correct).
+- **`src/app/api/admin/reports/[campaignId]/future/route.ts`** — Same fix. Future submissions can produce multiple response rows per question (multi-choice), so the over-counting was even worse there.
+
+### 2. Chart PNG download (new feature)
+- **`src/components/admin/reports/executive-report-view.tsx`** — Added:
+  - `useRef<HTMLDivElement>` attached to the dimension chart container.
+  - `downloadChartPng()` handler: serializes the SVG via `XMLSerializer`, loads it into an `Image`, draws onto a 2× scale canvas with a white background, then triggers a PNG download via `canvas.toBlob` + a temporary `<a>` element.
+  - "تنزيل المخطط" button (ImageIcon) in the header actions, disabled when `dimensions.length === 0`.
+  - Imports updated: added `useRef`, `Download`, `Image as ImageIcon`.
+
+### 3. Campaign status filter on trend view (new feature)
+- **`src/app/api/admin/reports/trend/route.ts`** — Added `?status=active|closed|all` query param. Defaults to `all` (both active + closed). Returns `statusFilter` in the response so the UI can reflect the active filter.
+- **`src/components/admin/reports/trend-report-view.tsx`** — Added:
+  - `useState<string>("all")` for `statusFilter`.
+  - Query key now includes `statusFilter` so changing the filter refetches.
+  - Select dropdown in the header with 3 options: "الكل (نشطة + مغلقة)" / "النشطة فقط" / "المغلقة فقط".
+  - Empty state now reflects the active filter (e.g., "لا توجد حملات مغلقة" when filtered to closed and none exist).
+
+### 4. Participation rate metric (new feature)
+- **`scripts/set-eligible-count.ts`** (new) — Adds `eligible_employees_count = "50"` to SystemSetting (admin-configurable via the existing settings UI). Ran successfully.
+- **`src/app/api/admin/dashboard/route.ts`** — Computes:
+  - `eligibleCount` from SystemSetting.
+  - `distinctEvaluatorCount` via `participationLedger.groupBy({ by: ["employeeHmac"], where: { status: "submitted", campaign: { status: { in: ["active","closed"] } } } })` — HMAC values themselves are NEVER returned, only the count.
+  - `participationRate = distinctEvaluators / eligible × 100` (rounded to 2dp), null if eligibleCount is 0.
+  - Returns `participation: { eligibleCount, distinctEvaluators, rate }` in the response.
+- **`src/components/admin/dashboard/dashboard-view.tsx`** — Added a 5th StatCard "معدل المشاركة" with the Percent icon + amber tone. Grid changed from 4 to 5 columns on large screens. Shows the rate as a percentage + hint "X من Y موظف".
+- **`src/app/api/admin/reports/trend/route.ts`** — Fetches `eligibleCount` from SystemSetting. Returns `participationRate` per campaign + top-level `eligibleCount`.
+- **`src/components/admin/reports/trend-report-view.tsx`** — Added a "معدل المشاركة" column to the comparison table with a mini progress bar (16px wide) + percentage. Shows "غير محدد" when rate is null.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, admin, dashboard, trend, campaign report, exec report).
+- **Privacy bug fix verified:**
+  - Before fix: env endpoint returned `suppressed: false` with 1 submitter (10 response rows ≥ 5 threshold) — WRONG.
+  - After fix: env endpoint returns `suppressed: true` with 1 submitter (1 distinct submitter < 5 threshold) — CORRECT.
+  - After seeding 5 more submissions: env endpoint returns `suppressed: false, distinctSubmitters: 6` — CORRECT.
+- **Chart PNG download verified:** button renders, disabled when no dimensions, handler serializes SVG → canvas → PNG.
+- **Trend status filter verified:** Select dropdown renders with 3 options, changing it refetches with the new `?status=` param.
+- **Participation rate verified:**
+  - Dashboard: 5th StatCard shows "معدل المشاركة 12%" (6 of 50 employees).
+  - Trend: comparison table shows "معدل المشاركة" column with "12%" + mini progress bar.
+- Campaign report env section now shows full data (averages 3.83, 4.50, etc. + favorable rates 67%, 83%, etc.) since 6 submitters ≥ 5 threshold.
+
+## Unresolved issues / risks
+- **DnD-kit on draft campaigns** — still not tested end-to-end on a draft campaign (the active campaign correctly disables the handles). Deferred.
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Per-question suppression UX in campaign-report-view** — the shared QuestionRow handles env + exec contexts, but the future section's QuestionRow may render differently. Need to verify the Lock icon shows for suppressed future questions too.
+
+## Priority recommendations for next round
+1. Verify DnD-kit reorder persists on a draft campaign (create draft → assign questions → drag → refresh → verify order saved).
+2. Audit the campaign-report-view's future-section QuestionRow to confirm per-question suppression renders the Lock icon consistently.
+3. Add a "download chart as PNG" button to the campaign-report-view's per-question charts (not just the executive dimension chart).
+4. Add a CSV/PNG download to the trend view (currently only the campaign report has exports).
+5. Consider adding a "participation rate over time" line chart to the trend view (distinct evaluators per campaign as a line).

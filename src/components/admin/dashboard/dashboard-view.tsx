@@ -25,6 +25,7 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  Percent,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -79,6 +80,11 @@ interface DashboardData {
     responseCount: number;
   } | null;
   orgDimensions?: OrgDimension[];
+  participation?: {
+    eligibleCount: number;
+    distinctEvaluators: number;
+    rate: number | null;
+  };
 }
 
 interface ImpersonationData {
@@ -121,6 +127,7 @@ export function DashboardView() {
   const byStatus = data?.data?.campaignsByStatus ?? [];
   const latest = data?.data?.latestCampaign ?? null;
   const orgDims = data?.data?.orgDimensions ?? [];
+  const participation = data?.data?.participation ?? null;
   // Top 3 + bottom 3 dimensions (already sorted desc by the backend).
   const orgStrengths = orgDims.slice(0, 3);
   const orgImprovements = orgDims
@@ -159,13 +166,13 @@ export function DashboardView() {
           </AlertDescription>
         </Alert>
       ) : isLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-28 w-full rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <StatCard
             title="عدد الحملات"
             value={totals?.campaigns ?? 0}
@@ -194,6 +201,19 @@ export function DashboardView() {
             icon={<MessageSquareText className="h-5 w-5" />}
             tone="emerald"
           />
+          {participation && (
+            <StatCard
+              title="معدل المشاركة"
+              value={
+                participation.rate !== null
+                  ? `${participation.rate}%`
+                  : "—"
+              }
+              hint={`${participation.distinctEvaluators} من ${participation.eligibleCount} موظف`}
+              icon={<Percent className="h-5 w-5" />}
+              tone="amber"
+            />
+          )}
         </div>
       )}
 

@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
@@ -11,12 +12,16 @@ const DIM_LABEL_AR: Record<string, string> = Object.fromEntries(
 );
 
 /**
- * GET /api/admin/reports/trend
+ * GET /api/admin/reports/trend?status=active|closed|all
  *
  * Cross-campaign trend / comparison view. Auth required (both roles).
  *
- * Returns, for every active OR closed campaign (draft/scheduled/archived
- * excluded — they don't have meaningful response data):
+ * Query param `status` filters which reportable campaigns are included:
+ *   - `active`: only active campaigns
+ *   - `closed`: only closed campaigns
+ *   - `all` (default): both active + closed
+ *
+ * Returns, for every matching campaign:
  *   - campaign: { id, titleAr, status, startsAt, endsAt, activatedAt, threshold }
  *   - totalResponses
  *   - environmentSubmittedCount (distinct employees who submitted env)
@@ -24,41 +29,41 @@ const DIM_LABEL_AR: Record<string, string> = Object.fromEntries(
  *   - executiveEvaluationCount (distinct (employee, exec) pairs)
  *   - distinctEvaluatorCount (distinct employees who evaluated ≥1 exec)
  *   - dimensionAverages: [{ dimension, labelAr, averageScore, executiveCount }]
- *       (per-campaign per-dimension averages, respecting each campaign's
- *        per-executive threshold — same algorithm as the dashboard org-wide
- *        widget but scoped to a single campaign)
  *
- * NEVER exposes raw Response rows or any employee identifier. All numbers
- * are aggregates. Per-campaign threshold is respected per-executive so a
- * low-N exec doesn't skew the campaign's dimension averages.
- *
- * The frontend uses this to render a side-by-side comparison table +
- * a line chart of dimension averages across campaigns (spec §16:
- * "Trend vs. prior campaigns, once more than one exists").
+ * NEVER exposes raw Response rows or any employee identifier.
  */
-export const GET = apiHandler(async () => {
-  const admin = await getAdminUser();
-  if (!admin) return fail(MESSAGES.unauthorized, 401);
+export const GET = apiHandler(
+  async (request: NextRequest) => {
+    const admin = await getAdminUser();
+    if (!admin) return fail(MESSAGES.unauthorized, 401);
 
-  // Only active/closed campaigns have meaningful data.
-  const campaigns = await db.campaign.findMany({
-    where: { status: { in: ["active", "closed"] } },
-    select: {
-      id: true,
-      titleAr: true,
-      status: true,
-      startsAt: true,
-      endsAt: true,
-      activatedAt: true,
-      minimumReportingThreshold: true,
-      timezone: true,
-    },
-    orderBy: { activatedAt: "asc" },
-  });
+    const statusFilter = request.nextUrl.searchParams.get("status") ?? "all";
+    const allowedStatuses =
+      statusFilter === "active"
+        ? ["active"]
+        : statusFilter === "closed"
+        ? ["closed"]
+        : ["active", "closed"];
 
-  if (campaigns.length === 0) {
-    return ok({ campaigns: [] });
-  }
+    // Only active/closed campaigns have meaningful data.
+    const campaigns = await db.campaign.findMany({
+      where: { status: { in: allowedStatuses } },
+      select: {
+        id: true,
+        titleAr: true,
+        status: true,
+        startsAt: true,
+        endsAt: true,
+        activatedAt: true,
+        minimumReportingThreshold: true,
+        timezone: true,
+      },
+      orderBy: { activatedAt: "asc" },
+    });
+
+    if (campaigns.length === 0) {
+      return ok({ campaigns: [], statusFilter });
+    }
 
   const campaignIds = campaigns.map((c) => c.id);
   const thresholdById = new Map(
@@ -177,6 +182,15 @@ export const GET = apiHandler(async () => {
     );
   }
 
+  // Eligible employees count (admin-configurable SystemSetting) — used to
+  // compute per-campaign participation rate. If unset, rates are null.
+  const eligibleSetting = await db.systemSetting.findUnique({
+    where: { key: "eligible_employees_count" },
+  });
+  const eligibleCount = eligibleSetting
+    ? parseInt(eligibleSetting.valueAr, 10) || 0
+    : 0;
+
   // Build per-campaign result.
   const result = campaigns.map((c) => {
     // dimensionAverages for this campaign
@@ -226,9 +240,13 @@ export const GET = apiHandler(async () => {
       futureSubmittedCount: futureCount,
       executiveEvaluationCount: execEvalCount,
       distinctEvaluators,
+      participationRate: eligibleCount > 0
+        ? Math.round((distinctEvaluators / eligibleCount) * 10000) / 100
+        : null,
       dimensionAverages: dims,
     };
   });
 
-  return ok({ campaigns: result });
-});
+  return ok({ campaigns: result, statusFilter, eligibleCount });
+  }
+);

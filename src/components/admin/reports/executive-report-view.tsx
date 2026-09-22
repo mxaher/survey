@@ -1,11 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   ChevronDown,
+  Download,
+  Image as ImageIcon,
   Lock,
   Printer,
   TrendingUp,
@@ -144,6 +146,8 @@ export function ExecutiveReportView({
   executiveId: string;
 }) {
   const router = useRouter();
+  const chartRef = useRef<HTMLDivElement>(null);
+
   const { data, isLoading, isError } = useQuery<Envelope<ExecutiveReport>>({
     queryKey: ["admin-exec-report", campaignId, executiveId],
     queryFn: () =>
@@ -275,6 +279,50 @@ export function ExecutiveReportView({
     orgScore: orgDimMap.get(d.dimension) ?? null,
   }));
 
+  // Download the dimension chart as a PNG. Renders the SVG to a canvas,
+  // then triggers a download. The chart keeps its CSS colors because we
+  // inline them via `fill` attributes on each Cell.
+  const downloadChartPng = () => {
+    const container = chartRef.current;
+    if (!container) return;
+    const svg = container.querySelector("svg");
+    if (!svg) return;
+
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const scale = 2; // 2x for crisp output
+      const w = svg.clientWidth || svg.parentElement?.clientWidth || 800;
+      const h = svg.clientHeight || svg.parentElement?.clientHeight || 450;
+      canvas.width = w * scale;
+      canvas.height = h * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const dlUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = dlUrl;
+        a.download = `dimension-chart-${r.executive.nameAr}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(dlUrl);
+      }, "image/png");
+    };
+    img.src = url;
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -294,6 +342,16 @@ export function ExecutiveReportView({
             >
               <Printer className="h-4 w-4" />
               طباعة
+            </Button>
+            <Button
+              variant="outline"
+              onClick={downloadChartPng}
+              className="min-h-11"
+              disabled={r.dimensions.length === 0}
+              title="تنزيل مخطط الأبعاد كصورة PNG"
+            >
+              <ImageIcon className="h-4 w-4" />
+              تنزيل المخطط
             </Button>
             <Button
               variant="ghost"
@@ -368,7 +426,7 @@ export function ExecutiveReportView({
             />
           ) : (
             <>
-              <div className="h-[28rem] w-full" dir="rtl">
+              <div ref={chartRef} className="h-[28rem] w-full" dir="rtl">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={chartData}
