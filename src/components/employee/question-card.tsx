@@ -14,6 +14,12 @@
  * task spec ("Mark required ones with a red asterisk"). The card is plain
  * shadcn Card — no custom CSS.
  *
+ * Visual polish (round 2):
+ *  - 2px right border accent (RTL) for required questions.
+ *  - Better spacing between the question header and the options.
+ *  - Hover lift on the card itself.
+ *  - Clearer dimension + required badges.
+ *
  * RTL behavior: relies on flex/grid auto-mirroring. No `text-left/right`.
  */
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -71,38 +77,64 @@ export function QuestionCard({
   };
 
   return (
-    <Card className="py-4">
-      <CardHeader className="pb-2 gap-1.5">
-        <div className="flex items-start gap-2">
-          <span className="text-xs font-mono text-muted-foreground pt-0.5 shrink-0">
+    <Card
+      className={cn(
+        "py-4 transition-all duration-200 hover:shadow-sm",
+        // Subtle right-edge accent (RTL) for required questions.
+        question.isRequired &&
+          "border-r-2 border-r-primary/40 hover:border-r-primary/70"
+      )}
+    >
+      <CardHeader className="pb-3 gap-1.5">
+        <div className="flex items-start gap-2.5">
+          <span
+            className="text-xs font-mono text-muted-foreground/80 pt-1 shrink-0 tabular-nums"
+            style={{ fontFeatureSettings: '"tnum" 1' }}
+          >
             {index + 1}.
           </span>
           <div className="flex-1 min-w-0">
             <p className="text-sm sm:text-base font-medium leading-relaxed text-foreground">
               {question.questionAr}
               {question.isRequired ? (
-                <span className="text-destructive ms-1" aria-hidden>
+                <span
+                  className="text-destructive ms-1 font-bold"
+                  aria-label="مطلوب"
+                  aria-hidden
+                >
                   *
                 </span>
               ) : null}
             </p>
-            <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
               {question.dimension ? (
-                <Badge variant="outline" className="text-[10px] font-normal">
+                <Badge
+                  variant="outline"
+                  className="text-[10px] font-medium text-primary/80 border-primary/30 bg-primary/5"
+                >
                   {question.dimension}
                 </Badge>
               ) : null}
               {question.isRequired ? (
-                <Badge variant="secondary" className="text-[10px] font-normal">
+                <Badge
+                  variant="outline"
+                  className="text-[10px] font-medium text-destructive border-destructive/30 bg-destructive/5"
+                >
                   مطلوب
                 </Badge>
               ) : (
-                <Badge variant="outline" className="text-[10px] font-normal">
+                <Badge
+                  variant="outline"
+                  className="text-[10px] font-medium text-muted-foreground"
+                >
                   اختياري
                 </Badge>
               )}
               {isMulti && maxSelections > 0 ? (
-                <Badge variant="outline" className="text-[10px] font-normal">
+                <Badge
+                  variant="outline"
+                  className="text-[10px] font-medium text-amber-700 border-amber-300/50 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40"
+                >
                   حد أقصى {maxSelections} اختيارات
                 </Badge>
               ) : null}
@@ -110,7 +142,7 @@ export function QuestionCard({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="pt-2">
+      <CardContent className="pt-0">
         {isScale ? (
           <ScaleRadio
             options={question.options}
@@ -134,10 +166,10 @@ export function QuestionCard({
                   key={opt.value}
                   htmlFor={`${fieldName}-${opt.value}`}
                   className={cn(
-                    "flex items-center gap-3 rounded-md border px-3 py-3 cursor-pointer transition-colors min-h-[44px]",
+                    "flex items-center gap-3 rounded-lg border px-3.5 py-3.5 cursor-pointer transition-all duration-150 min-h-[48px]",
                     checked
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-card text-foreground/90 hover:bg-accent/50"
+                      ? "border-primary bg-primary/5 text-foreground ring-1 ring-primary/30 shadow-sm"
+                      : "border-border bg-card text-foreground/90 hover:bg-accent/50 hover:border-primary/30"
                   )}
                 >
                   <RadioGroupItem
@@ -145,7 +177,12 @@ export function QuestionCard({
                     value={opt.value}
                     className="shrink-0"
                   />
-                  <span className="text-sm font-medium leading-snug">
+                  <span
+                    className={cn(
+                      "text-sm leading-snug",
+                      checked ? "font-semibold" : "font-medium"
+                    )}
+                  >
                     {opt.labelAr}
                   </span>
                 </Label>
@@ -162,10 +199,10 @@ export function QuestionCard({
                   key={opt.value}
                   htmlFor={`${fieldName}-${opt.value}`}
                   className={cn(
-                    "flex items-center gap-3 rounded-md border px-3 py-3 cursor-pointer transition-colors min-h-[44px]",
+                    "flex items-center gap-3 rounded-lg border px-3.5 py-3.5 cursor-pointer transition-all duration-150 min-h-[48px]",
                     checked
-                      ? "border-primary bg-primary/5"
-                      : "border-border bg-card hover:bg-accent/50",
+                      ? "border-primary bg-primary/5 ring-1 ring-primary/30 shadow-sm"
+                      : "border-border bg-card hover:bg-accent/50 hover:border-primary/30",
                     optDisabled && !disabled && "opacity-60 cursor-not-allowed"
                   )}
                 >
@@ -175,7 +212,12 @@ export function QuestionCard({
                     disabled={optDisabled}
                     onCheckedChange={() => toggleMulti(opt.value)}
                   />
-                  <span className="text-sm font-medium leading-snug">
+                  <span
+                    className={cn(
+                      "text-sm leading-snug",
+                      checked ? "font-semibold" : "font-medium"
+                    )}
+                  >
                     {opt.labelAr}
                   </span>
                 </Label>

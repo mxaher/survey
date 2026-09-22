@@ -283,6 +283,7 @@ export function ExecutiveReportView({
             .filter(Boolean)
             .join(" — ") ?? undefined
         }
+        eyebrow="تقرير تقييم المسؤول"
         actions={
           <div className="flex flex-wrap gap-2 no-print">
             <Button
@@ -314,6 +315,20 @@ export function ExecutiveReportView({
         <span>عدد التقييمات: {r.evaluationCount}</span>
         <span className="text-border">|</span>
         <span>حد الإخفاء: {r.threshold}</span>
+        {overallAvg != null && orgAvgLine != null && (
+          <Badge
+            variant="outline"
+            className={
+              overallAvg >= orgAvgLine
+                ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
+                : "border-amber-300 bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+            }
+          >
+            {overallAvg >= orgAvgLine
+              ? "أداء يتجاوز متوسط المؤسسة"
+              : "أداء ضمن متوسط المؤسسة"}
+          </Badge>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -322,18 +337,21 @@ export function ExecutiveReportView({
           value={r.evaluationCount}
           icon={<Star className="h-4 w-4" />}
           hint="تقييمات مستقلة لهذا المسؤول"
+          tone="navy"
         />
         <StatCard
           title="متوسط الدرجة العام"
           value={formatAvg(overallAvg)}
           icon={<TrendingUp className="h-4 w-4" />}
           hint="مقياس 1–5 (متوسط الأبعاد)"
+          tone="gold"
         />
         <StatCard
           title="نسبة الإجابات الإيجابية"
           value={formatPct(overallFavorable)}
           icon={<TrendingUp className="h-4 w-4" />}
           hint="متوسط نسبة (دائماً/غالباً أوافق بشدة/أوافق)"
+          tone="emerald"
         />
       </div>
 
@@ -349,70 +367,98 @@ export function ExecutiveReportView({
             />
           ) : (
             <>
-              <div className="h-80 w-full">
+              <div className="h-[28rem] w-full" dir="rtl">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={chartData}
-                    margin={{ top: 12, right: 24, bottom: 60, left: 8 }}
+                    layout="vertical"
+                    margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
                   >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                     <XAxis
-                      dataKey="dimension"
-                      tick={{ fontSize: 11 }}
-                      interval={0}
-                      angle={-20}
-                      textAnchor="end"
-                      height={50}
-                    />
-                    <YAxis
+                      type="number"
                       domain={[0, 5]}
                       tick={{ fontSize: 12 }}
                       allowDecimals={false}
                     />
+                    <YAxis
+                      type="category"
+                      dataKey="dimension"
+                      width={140}
+                      tick={{ fontSize: 12 }}
+                      interval={0}
+                    />
                     <Tooltip
+                      cursor={{ fill: "var(--muted)", opacity: 0.3 }}
                       formatter={(v: number, name) =>
                         name === "score"
                           ? [Number(v).toFixed(2), "متوسط هذا المسؤول"]
                           : [v == null ? "—" : Number(v).toFixed(2), "متوسط المؤسسة"]
                       }
+                      contentStyle={{
+                        borderRadius: 8,
+                        border: "1px solid var(--border)",
+                        fontSize: 12,
+                      }}
                     />
                     {orgAvgLine != null && (
                       <ReferenceLine
-                        y={orgAvgLine}
+                        x={orgAvgLine}
                         stroke="var(--chart-2)"
-                        strokeDasharray="6 4"
+                        strokeDasharray="0"
+                        strokeWidth={2}
                         label={{
-                          value: `متوسط المؤسسة (${orgAvgLine.toFixed(2)})`,
+                          value: `متوسط المؤسسة ${orgAvgLine.toFixed(2)}`,
                           position: "top",
                           fill: "var(--chart-2)",
                           fontSize: 11,
+                          fontWeight: 600,
                         }}
                       />
                     )}
                     <Bar
                       dataKey="score"
                       fill="var(--chart-1)"
-                      radius={[4, 4, 0, 0]}
-                      maxBarSize={48}
+                      radius={[0, 6, 6, 0]}
+                      maxBarSize={28}
                     >
-                      {chartData.map((entry, i) => (
-                        <Cell
-                          key={i}
-                          fill={
-                            entry.orgScore != null && entry.score < entry.orgScore
-                              ? "var(--chart-5)"
-                              : "var(--chart-1)"
-                          }
-                        />
-                      ))}
+                      {chartData.map((entry, i) => {
+                        const below =
+                          entry.orgScore != null && entry.score < entry.orgScore;
+                        return (
+                          <Cell
+                            key={i}
+                            fill={below ? "var(--chart-5)" : "var(--chart-1)"}
+                          />
+                        );
+                      })}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                الأعمدة الزرقاء أعلى من متوسط المؤسسة، الأعمدة الحمراء أدنى منه.
-                الخط الذهبي المتقطع يمثل متوسط المؤسسة العامة.
-              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-3 w-3 rounded-sm"
+                    style={{ background: "var(--chart-1)" }}
+                  />
+                  أعلى من متوسط المؤسسة
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-3 w-3 rounded-sm"
+                    style={{ background: "var(--chart-5)" }}
+                  />
+                  أدنى من متوسط المؤسسة
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-0.5 w-4"
+                    style={{ background: "var(--chart-2)" }}
+                  />
+                  خط متوسط المؤسسة
+                </span>
+              </div>
             </>
           )}
         </CardContent>

@@ -7,6 +7,7 @@ import {
   ArrowRight,
   ChevronDown,
   Download,
+  FileSpreadsheet,
   Lock,
   Printer,
   Users,
@@ -103,6 +104,7 @@ type QuestionAggregate = {
   distribution: DistributionEntry[];
   favorableRate: number | null;
   notApplicableCount: number;
+  perQuestionSuppressed?: boolean;
 };
 
 type SectionReport =
@@ -164,7 +166,8 @@ export function CampaignReportView({ campaignId }: { campaignId: string }) {
   const isLoadingOverview = overview.isLoading && !ov;
   const isError = overview.isError;
 
-  const exportUrl = `/api/admin/reports/${campaignId}/export?format=csv`;
+  const exportCsvUrl = `/api/admin/reports/${campaignId}/export?format=csv`;
+  const exportXlsxUrl = `/api/admin/reports/${campaignId}/export?format=xlsx`;
 
   return (
     <div className="flex flex-col gap-6">
@@ -195,12 +198,22 @@ export function CampaignReportView({ campaignId }: { campaignId: string }) {
                 <Button
                   variant="outline"
                   onClick={() => {
-                    window.location.href = exportUrl;
+                    window.location.href = exportCsvUrl;
                   }}
                   className="min-h-11"
                 >
                   <Download className="h-4 w-4" />
                   تصدير CSV
+                </Button>
+                <Button
+                  variant="default"
+                  onClick={() => {
+                    window.location.href = exportXlsxUrl;
+                  }}
+                  className="min-h-11"
+                >
+                  <FileSpreadsheet className="h-4 w-4" />
+                  تصدير Excel
                 </Button>
                 <Button
                   variant="secondary"
@@ -471,20 +484,24 @@ function QuestionCard({
             {question.questionAr}
           </span>
           <span className="mt-0.5 text-xs text-muted-foreground">
-            {isFuture
+            {question.perQuestionSuppressed
+              ? `عدد الإجابات: ${question.count} — أقل من حد الإخفاء، تم إخفاء التفاصيل`
+              : isFuture
               ? `عدد الإجابات: ${question.count}`
               : `المتوسط: ${formatAvg(question.averageScore)} • نسبة الإجابات الإيجابية: ${formatPct(question.favorableRate)}`}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {hasData ? (
+          {question.perQuestionSuppressed ? (
+            <Lock className="h-4 w-4 text-muted-foreground" />
+          ) : hasData ? (
             <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
           ) : (
             <span className="text-xs text-muted-foreground">لا توجد إجابات</span>
           )}
         </div>
       </CollapsibleTrigger>
-      {hasData && (
+      {hasData && !question.perQuestionSuppressed && (
         <CollapsibleContent>
           <div className="mt-4 flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">

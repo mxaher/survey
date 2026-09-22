@@ -10,9 +10,11 @@
  * لا ينطبق). The labels and scores come from the frozen option snapshots —
  * this component just lays them out responsively.
  *
- * RTL behavior: relies on flex/grid auto-mirroring (no `text-left/right`
- * hacks). On wide screens options wrap horizontally with a min touch target
- * of 44px; on narrow screens they stack vertically.
+ * Visual polish (round 2):
+ *  - 48px min touch target (was 44).
+ *  - Hover lift + ring transition.
+ *  - Checked state uses primary bg + bold + ring.
+ *  - "not_applicable" option is visually muted (it's excluded from averages).
  */
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
@@ -44,15 +46,18 @@ export function ScaleRadio({
     >
       {options.map((opt) => {
         const checked = value === opt.value;
+        const isNa = opt.value === "not_applicable";
         return (
           <Label
             key={opt.value}
             htmlFor={`${name}-${opt.value}`}
             className={cn(
-              "flex items-center gap-3 rounded-md border px-3 py-3 cursor-pointer transition-colors min-h-[44px]",
+              "group flex items-center gap-3 rounded-lg border px-3.5 py-3.5 cursor-pointer transition-all duration-150 min-h-[48px]",
               checked
-                ? "border-primary bg-primary/5 text-foreground"
-                : "border-border bg-card text-foreground/90 hover:bg-accent/50"
+                ? "border-primary bg-primary/5 text-foreground ring-1 ring-primary/30 shadow-sm"
+                : "border-border bg-card text-foreground/90 hover:bg-accent/50 hover:border-primary/30",
+              isNa && "opacity-70",
+              disabled && "cursor-not-allowed opacity-60"
             )}
           >
             <RadioGroupItem
@@ -60,7 +65,12 @@ export function ScaleRadio({
               value={opt.value}
               className="shrink-0"
             />
-            <span className="text-sm font-medium leading-snug">
+            <span
+              className={cn(
+                "text-sm leading-snug",
+                checked ? "font-semibold" : "font-medium"
+              )}
+            >
               {opt.labelAr}
             </span>
           </Label>

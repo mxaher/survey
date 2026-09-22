@@ -134,11 +134,20 @@ export const GET = apiHandler(
       // option set is bucketed individually with its raw value as the
       // labelAr (defensive — shouldn't happen in practice).
       const knownValues = new Set(snap.options.map((o) => o.value));
-      for (const [value, count] of optionBuckets) {
+      for (const [value, c] of optionBuckets) {
         if (!knownValues.has(value)) {
-          distribution.push({ value, labelAr: value, count });
+          distribution.push({ value, labelAr: value, count: c });
         }
       }
+
+      // Per-question threshold suppression: if this individual question
+      // has fewer responses than the campaign threshold, mark it as
+      // suppressed so the UI can mask the detailed numbers (avg/dist/etc)
+      // while still showing the question text + count. This is stricter
+      // than the whole-section suppression above and protects against
+      // re-identification via low-N questions inside an otherwise
+      // qualifying section.
+      const perQuestionSuppressed = count < threshold;
 
       return {
         snapshotId: snap.id,
@@ -147,10 +156,13 @@ export const GET = apiHandler(
         dimension: snap.dimension,
         count,
         validCount,
-        averageScore,
-        distribution,
-        favorableRate,
-        notApplicableCount,
+        averageScore: perQuestionSuppressed ? null : averageScore,
+        distribution: perQuestionSuppressed
+          ? distribution.map((d) => ({ ...d, count: 0 }))
+          : distribution,
+        favorableRate: perQuestionSuppressed ? null : favorableRate,
+        notApplicableCount: perQuestionSuppressed ? 0 : notApplicableCount,
+        perQuestionSuppressed,
       };
     });
 
