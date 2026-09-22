@@ -90,6 +90,34 @@ export function CommandPalette() {
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Recently-viewed items — persisted to localStorage so they survive
+  // page refreshes. Capped at 5 entries. Each entry: { href, titleAr,
+  // type, recordedAt }. We read on mount (lazy initializer) and write
+  // on every navigation.
+  const [recent, setRecent] = useState<SearchResult[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem("almrshd-recent");
+      return raw ? (JSON.parse(raw) as SearchResult[]) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const recordRecent = (r: SearchResult) => {
+    setRecent((prev) => {
+      // Dedupe by href, prepend, cap at 5.
+      const filtered = prev.filter((x) => x.href !== r.href);
+      const next = [r, ...filtered].slice(0, 5);
+      try {
+        window.localStorage.setItem("almrshd-recent", JSON.stringify(next));
+      } catch {
+        // localStorage might be full or disabled — non-fatal.
+      }
+      return next;
+    });
+  };
+
   // Open/close toggle — also resets the query + active index when opening.
   const toggleOpen = () => {
     setOpen((prev) => {
@@ -164,7 +192,20 @@ export function CommandPalette() {
       icon: n.icon,
     }));
 
-    if (query.length < 2 || !data?.data) return navResults;
+    // When the query is empty, show recently-viewed items at the top.
+    // Once the user starts typing, hide recents (they'd be redundant
+    // with the search results).
+    const recentResults: SearchResult[] =
+      query.length < 2
+        ? recent.map((r, i) => ({
+            ...r,
+            id: `recent-${i}-${r.id}`,
+            subtitleAr: `زيارة سابقة · ${r.subtitleAr ?? r.type}`,
+          }))
+        : [];
+
+    if (query.length < 2 || !data?.data)
+      return [...recentResults, ...navResults];
 
     const campaignResults: SearchResult[] = data.data.campaigns.map((c) => ({
       type: "campaign" as const,
@@ -203,7 +244,7 @@ export function CommandPalette() {
     }));
 
     return [...navResults, ...campaignResults, ...questionResults, ...executiveResults];
-  }, [query, data]);
+  }, [query, data, recent]);
 
   // Clamp active index to valid range when results change — computed at
   // render time (no setState-in-effect).
@@ -229,6 +270,7 @@ export function CommandPalette() {
   };
 
   const select = (r: SearchResult) => {
+    recordRecent(r);
     router.push(r.href);
     setOpen(false);
   };

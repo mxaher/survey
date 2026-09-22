@@ -77,12 +77,39 @@ type AdminUser = {
   isActive: boolean;
   createdAt: string;
   updatedAt?: string;
+  lastLoginAt?: string | null;
 };
 
 const ROLE_LABEL: Record<AdminUser["role"], string> = {
   SUPER_ADMIN: "مدير عام",
   SURVEY_ADMIN: "مدير استبيان",
 };
+
+/** Avatar color palette — deterministic based on the user's display name
+ * hash so the same user always gets the same color. */
+const AVATAR_COLORS = [
+  "bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
+  "bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+  "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+  "bg-sky-100 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+  "bg-violet-100 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300",
+  "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/40 dark:text-fuchsia-300",
+];
+
+function avatarColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
+function avatarInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 0 || !parts[0]) return "؟";
+  if (parts.length === 1) return parts[0].slice(0, 2);
+  return (parts[0][0] ?? "") + (parts[1][0] ?? "");
+}
 
 export function UsersView() {
   const qc = useQueryClient();
@@ -241,11 +268,11 @@ export function UsersView() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>الاسم المعروض</TableHead>
-                <TableHead>البريد الإلكتروني</TableHead>
+                <TableHead>المستخدم</TableHead>
                 <TableHead>المعرّف الخارجي</TableHead>
                 <TableHead>الدور</TableHead>
                 <TableHead>الحالة</TableHead>
+                <TableHead>آخر نشاط</TableHead>
                 <TableHead>أُنشئ في</TableHead>
                 <TableHead className="text-center">إجراءات</TableHead>
               </TableRow>
@@ -295,16 +322,28 @@ function UserRow({
   const [editOpen, setEditOpen] = useState(false);
 
   return (
-    <TableRow>
+    <TableRow className="transition-colors hover:bg-muted/40">
       <TableCell>
-        <div className="flex flex-col">
-          <span className="font-medium text-foreground">
-            {user.displayName ?? "—"}
+        <div className="flex items-center gap-3">
+          <span
+            className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold ${avatarColor(
+              user.displayName ?? user.externalId
+            )}`}
+            aria-hidden
+          >
+            {avatarInitials(user.displayName ?? user.externalId)}
           </span>
+          <div className="flex flex-col min-w-0">
+            <span className="font-medium text-foreground truncate">
+              {user.displayName ?? "—"}
+            </span>
+            {user.email && (
+              <span className="text-xs text-muted-foreground truncate">
+                {user.email}
+              </span>
+            )}
+          </div>
         </div>
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        {user.email ?? "—"}
       </TableCell>
       <TableCell>
         <code className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground">
@@ -336,6 +375,18 @@ function UserRow({
           >
             معطَّل
           </Badge>
+        )}
+      </TableCell>
+      <TableCell className="text-muted-foreground">
+        {user.lastLoginAt ? (
+          <span
+            className="tabular-nums"
+            style={{ fontFeatureSettings: '"tnum" 1' }}
+          >
+            {toRiyadhDisplay(user.lastLoginAt)}
+          </span>
+        ) : (
+          <span className="text-xs">لم يسجّل بعد</span>
         )}
       </TableCell>
       <TableCell className="text-muted-foreground">

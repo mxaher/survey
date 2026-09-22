@@ -24,7 +24,11 @@ async function requireSuperAdmin() {
 
 /**
  * GET /api/admin/users
- * Lists all admin users (SUPER_ADMIN only).
+ * Lists all admin users (SUPER_ADMIN only). Includes `lastLoginAt`
+ * computed from the audit log — the most recent audit entry for each
+ * admin (any action by that admin counts as "activity"). This avoids
+ * adding a dedicated login-tracking table while still surfacing
+ * "when did this admin last do anything".
  */
 export const GET = apiHandler(async () => {
   const { admin, deny } = await requireSuperAdmin();
@@ -33,6 +37,19 @@ export const GET = apiHandler(async () => {
   const users = await db.adminUser.findMany({
     orderBy: { createdAt: "desc" },
   });
+
+  // Fetch the most recent audit entry per admin user — this is our
+  // "last activity" proxy for "last login". A single query with
+  // groupBy gives us the latest createdAt per adminUserId.
+  const lastActivity = await db.auditLog.groupBy({
+    by: ["adminUserId"],
+    _max: { createdAt: true },
+  });
+  const lastActivityById = new Map(
+    lastActivity
+      .filter((a) => a.adminUserId !== null)
+      .map((a) => [a.adminUserId as string, a._max.createdAt])
+  );
 
   return ok({
     users: users.map((u) => ({
@@ -44,6 +61,7 @@ export const GET = apiHandler(async () => {
       isActive: u.isActive,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
+      lastLoginAt: lastActivityById.get(u.id) ?? null,
     })),
   });
 });

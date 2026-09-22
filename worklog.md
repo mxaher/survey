@@ -980,3 +980,65 @@ Task: Cmd+K command palette + campaigns list health filter + admin header quick-
 3. Add a campaign comparison export with the participation-rate chart embedded as a PNG image in the XLSX — round 5 priority #3.
 4. Add a "recently viewed" section to the command palette (localStorage-based, shows last 5 navigated items at the top).
 5. Consider adding keyboard shortcuts to the employee survey wizard (e.g., 1-5 to select scale options, Enter to advance).
+
+---
+Task ID: 12 (cron-triggered review round 8)
+Agent: main (orchestrator, cron job 404970)
+Task: Admin users avatar initials + last-login column + recently-viewed in command palette.
+
+## Current project status (assessment)
+- Round 7 (Task 11) shipped: Cmd+K command palette, campaigns list health filter, admin header quick-search button.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 7 worklog flagged 5 priorities for round 8; this round addressed 2 of them.
+
+## Round 8 goals
+1. **Add last-login timestamp to admin users table** (round 6 priority #4).
+2. **Add recently-viewed section to command palette** (round 7 priority #4).
+3. **Styling: avatar initials + improved users table** (merged name + email cell, hover states).
+
+## Completed modifications
+
+### 1. Last-login timestamp on admin users table (new feature)
+- **`src/app/api/admin/users/route.ts`** — GET endpoint now computes `lastLoginAt` per user via a `db.auditLog.groupBy({ by: ["adminUserId"], _max: { createdAt: true } })` query. This gives the most recent audit entry per admin — a "last activity" proxy for "last login" without needing a dedicated login-tracking table. Returns `lastLoginAt: Date | null` per user.
+- **`src/components/admin/users/users-view.tsx`** — Added "آخر نشاط" column to the table. Shows the Riyadh-formatted timestamp when available, or "لم يسجّل بعد" (never logged in) for users with no audit entries.
+- Verified: the dev admin user shows `lastLoginAt: 2026-09-22T06:36:35.223Z` (from the most recent audit entry).
+
+### 2. Recently-viewed in command palette (new feature)
+- **`src/components/admin/command-palette.tsx`** — Added:
+  - `useState<SearchResult[]>` for `recent` with a lazy initializer that reads from `localStorage.getItem("almrshd-recent")`.
+  - `recordRecent(r)` function: dedupes by href, prepends the new entry, caps at 5, writes back to localStorage.
+  - The `select()` handler now calls `recordRecent(r)` before navigating.
+  - The `results` useMemo prepends `recentResults` when the query is empty (hidden once the user starts typing — recents would be redundant with search results). Each recent item gets a "زيارة سابقة · ..." subtitle.
+  - The `recent` array is added to the useMemo dependency array.
+- Verified: navigating to "الحملات" via the palette, then reopening the palette shows "الحملات" at the top with subtitle "زيارة سابقة · تنقل".
+
+### 3. Admin users table styling (styling polish)
+- **`src/components/admin/users/users-view.tsx`** — Added:
+  - `avatarColor(name)` function: deterministic color from a 6-color palette (rose/amber/emerald/sky/violet/fuchsia) based on a hash of the name. Same user always gets the same color.
+  - `avatarInitials(name)` function: extracts up to 2 initials (first letter of first two words).
+  - Merged the "الاسم المعروض" + "البريد الإلكتروني" columns into a single "المستخدم" column with a 9×9 rounded avatar circle (colored bg + initials) + name + email stacked.
+  - Added `transition-colors hover:bg-muted/40` to table rows.
+  - Last-login cell uses `tabular-nums` + `font-feature-settings: "tnum" 1` for alignment.
+- VLM confirmed: first column shows avatar circle + name + email stacked, "آخر نشاط" column shows timestamp, role column shows badge.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, users, trend, audit).
+- **Users endpoint verified**: returns `lastLoginAt: 2026-09-22T06:36:35.223Z` for the dev admin user.
+- **Users view verified**: renders avatar initials + merged name/email cell + "آخر نشاط" column + role badge. VLM confirmed all 3 elements.
+- **Recently-viewed verified**: navigating via the palette then reopening shows the navigated item at the top with "زيارة سابقة" subtitle.
+- Promoted the dev admin to SUPER_ADMIN (via `scripts/promote-admin.ts`) so the users tab is accessible for testing.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — round 5 priority #3, still deferred.
+- **Campaign archive view** — round 6 priority #5, deferred.
+- **Keyboard shortcuts in employee survey wizard** — round 7 priority #5, deferred.
+
+## Priority recommendations for next round
+1. Add a campaign archive view (read-only grid for archived campaigns) — round 6 priority #5.
+2. Add keyboard shortcuts to the employee survey wizard (1-5 for scale, Enter to advance) — round 7 priority #5.
+3. Add a campaign comparison export with the participation-rate chart embedded as PNG in XLSX — round 5 priority #3.
+4. Add a "clear recently-viewed" button to the command palette (small X next to the recent section header).
+5. Consider adding a "user profile" dropdown in the admin header (shows avatar + name + role + logout).
