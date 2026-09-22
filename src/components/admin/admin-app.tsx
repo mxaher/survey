@@ -58,6 +58,8 @@ import {
 } from "@/components/ui/sheet";
 import { Menu } from "lucide-react";
 import { CommandPalette } from "@/components/admin/command-palette";
+import { ThemeToggle } from "@/components/shared/theme-toggle";
+import { NotificationsBell } from "@/components/shared/notifications-bell";
 
 // Lazy-load each tab's content. Paths are the contract for the subagents.
 const DashboardView = dynamic(
@@ -294,6 +296,8 @@ export function AdminApp() {
           <ClipboardList className="h-3.5 w-3.5" />
           عرض تجربة الموظف
         </a>
+        <ThemeToggle />
+        <NotificationsBell />
         {/* User profile dropdown — avatar + name + role + logout */}
         {admin?.data && (
           <DropdownMenu>

@@ -163,6 +163,7 @@ export function CampaignsListView() {
     "comfortable"
   );
   const [healthFilter, setHealthFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
 
   // Compute health level for a campaign — mirrors the HealthDot logic.
   const healthLevel = (c: CampaignListRow): "idle" | "weak" | "low" | "active" | "healthy" => {
@@ -175,10 +176,11 @@ export function CampaignsListView() {
     return "weak";
   };
 
-  const filteredCampaigns =
-    healthFilter === "all"
-      ? campaigns
-      : campaigns.filter((c) => healthLevel(c) === healthFilter);
+  const filteredCampaigns = campaigns.filter((c) => {
+    const healthOk = healthFilter === "all" || healthLevel(c) === healthFilter;
+    const statusOk = statusFilter === "all" || c.status === statusFilter;
+    return healthOk && statusOk;
+  });
 
   const invalidateAll = () =>
     qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
@@ -315,7 +317,7 @@ export function CampaignsListView() {
         }
       />
 
-      {/* Health filter bar — only shown when there are campaigns */}
+      {/* Filter bar — health + status — only shown when there are campaigns */}
       {!isLoading && !isError && campaigns.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 no-print">
           <span className="text-xs text-muted-foreground">تصفية حسب الصحة:</span>
@@ -343,7 +345,32 @@ export function CampaignsListView() {
               </button>
             ))}
           </div>
-          {healthFilter !== "all" && (
+          <span className="text-xs text-muted-foreground">·</span>
+          <span className="text-xs text-muted-foreground">الحالة:</span>
+          <div className="flex items-center rounded-lg border border-border bg-card p-0.5">
+            {[
+              { value: "all", label: "الكل" },
+              { value: "draft", label: "مسودة" },
+              { value: "scheduled", label: "مجدولة" },
+              { value: "active", label: "نشطة" },
+              { value: "closed", label: "مغلقة" },
+              { value: "archived", label: "مؤرشفة" },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setStatusFilter(opt.value)}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  statusFilter === opt.value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {(healthFilter !== "all" || statusFilter !== "all") && (
             <span className="text-xs text-muted-foreground">
               ({filteredCampaigns.length} من {campaigns.length})
             </span>

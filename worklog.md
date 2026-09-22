@@ -1112,3 +1112,67 @@ Task: Campaign archive view + employee wizard keyboard shortcuts + admin header 
 3. Add a "campaign summary" PDF export (one-page executive summary with key metrics).
 4. Consider adding a "notifications" bell icon in the admin header (shows when a campaign is about to close, when threshold isn't met, etc.).
 5. Consider adding a "dark mode" toggle to the admin shell (next-themes is already installed).
+
+---
+Task ID: 14 (cron-triggered review round 10)
+Agent: main (orchestrator, cron job 404970)
+Task: Dark mode toggle + notifications bell + campaigns list status filter.
+
+## Current project status (assessment)
+- Round 9 (Task 13) shipped: campaign archive view, employee wizard keyboard shortcuts, admin header user profile dropdown, clear-recents button.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 9 worklog flagged 5 priorities for round 10; this round addressed 3 of them.
+
+## Round 10 goals
+1. **Add dark mode toggle** (round 9 priority #5 — next-themes already installed).
+2. **Add notifications bell icon in admin header** (round 9 priority #4).
+3. **Add filter-by-status dropdown on campaigns list** (round 9 priority #2).
+
+## Completed modifications
+
+### 1. Dark mode toggle (new feature)
+- **`src/components/providers.tsx`** — Wrapped the app in `next-themes`'s `ThemeProvider` with `attribute="class"`, `defaultTheme="light"`, `enableSystem={false}` (corporate admin tool — we default to light), `disableTransitionOnChange` (avoids flash on toggle). The dark-mode CSS variables already exist in `globals.css` (`.dark { ... }` block from the original foundation).
+- **`src/components/shared/theme-toggle.tsx`** (new) — `export function ThemeToggle()`. A ghost icon button that toggles between light/dark. Shows `Moon` icon in light mode (click → dark) and `Sun` icon in dark mode (click → light). Uses `useTheme()` from next-themes.
+- **`src/components/admin/admin-app.tsx`** — Added `<ThemeToggle />` to the admin header, between "عرض تجربة الموظف" and the user profile dropdown.
+- Verified: clicking the toggle switches to dark mode (VLM confirmed: dark background, light text, sun icon visible); clicking again switches back to light mode.
+
+### 2. Notifications bell icon (new feature)
+- **`src/app/api/admin/notifications/route.ts`** (new) — `GET /api/admin/notifications`. Returns actionable alerts for active + draft campaigns:
+  - "about_to_close" (warning): active campaign ending within 3 days.
+  - "no_responses" (critical): active campaign with 0 responses.
+  - "threshold_not_met" (info): active campaign with participationLedger count < minimumReportingThreshold.
+  - "draft_not_scheduled" (info): draft campaign (gentle reminder to schedule/activate).
+  - NO employee identifiers — uses aggregate `_count` only.
+- **`src/components/shared/notifications-bell.tsx`** (new) — `export function NotificationsBell()`. A Popover with a Bell icon button. Shows a red count badge when there are unread notifications. Popover content: header with "الإشعارات" + count badge, scrollable list of notifications (each with a severity-colored icon circle + message + "انقر للعرض"), or an empty state "لا توجد إشعارات حالياً". Clicking a notification navigates to the campaign detail. Polls every 60 seconds (`staleTime: 60_000`).
+- **`src/components/admin/admin-app.tsx`** — Added `<NotificationsBell />` to the header, between the ThemeToggle and the user profile dropdown.
+- Verified: bell renders with count badge (0 in the current demo since the active campaign has 48 participations ≥ threshold 5); popover opens with "لا توجد إشعارات حالياً" empty state.
+
+### 3. Campaigns list status filter (new feature)
+- **`src/components/admin/campaigns/campaigns-list-view.tsx`** — Added:
+  - `useState<string>("all")` for `statusFilter`.
+  - Updated `filteredCampaigns` to filter by BOTH health + status: `campaigns.filter(c => healthOk && statusOk)`.
+  - A new status segmented filter (6 buttons: الكل / مسودة / مجدولة / نشطة / مغلقة / مؤرشفة) in the filter bar, next to the health filter. Same visual style as the health filter (bordered container, active = `bg-primary text-primary-foreground`).
+  - The filter count indicator now shows when EITHER filter is active: `(healthFilter !== "all" || statusFilter !== "all")`.
+- Verified: status filter renders with all 6 options.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, campaigns/archive, users, trend).
+- **Dark mode verified**: toggle switches between light/dark; VLM confirmed dark background + light text + sun icon in dark mode.
+- **Notifications bell verified**: renders with count badge; popover opens with empty state "لا توجد إشعارات حالياً" (correct — the active campaign has sufficient participations).
+- **Status filter verified**: renders with all 6 options (الكل / مسودة / مجدولة / نشطة / مغلقة / مؤرشفة).
+- **Notifications endpoint verified**: returns 200 with `count: 0` (correct for the current demo data).
+- Header now has 4 elements: quick-search (⌘K) + theme toggle + notifications bell + user profile dropdown.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — round 5 priority #3, still deferred (requires server-side chart rendering — complex).
+- **Campaign summary PDF export** — round 9 priority #3, deferred.
+
+## Priority recommendations for next round
+1. Add a "campaign summary" PDF export (one-page executive summary with key metrics) — round 9 priority #3.
+2. Add a campaign comparison export with chart PNG embedded in XLSX — round 5 priority #3 (last deferred item, complex).
+3. Add a "dark mode" persistence indicator in the employee view (currently the toggle only appears in the admin header).
+4. Add notification preferences (let admins choose which notification types they want to see).
+5. Consider adding a "campaign calendar" view showing all campaigns on a timeline.
