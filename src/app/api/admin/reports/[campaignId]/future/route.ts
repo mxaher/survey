@@ -85,16 +85,26 @@ export const GET = apiHandler(
         buckets.set(v, (buckets.get(v) ?? 0) + 1);
       }
 
+      // Per-question threshold suppression: if this individual question has
+      // fewer responses than the campaign threshold, mask the distribution
+      // counts (but still return the question text + raw total so the UI
+      // can show "أقل من حد الإخفاء"). Protects against re-identification
+      // via low-N questions inside an otherwise qualifying section.
+      const perQuestionSuppressed = total < threshold;
+
       const distribution = snap.options
         .slice()
         .sort((a, b) => a.displayOrder - b.displayOrder)
         .map((opt) => {
-          const c = buckets.get(opt.value) ?? 0;
+          const c = perQuestionSuppressed ? 0 : (buckets.get(opt.value) ?? 0);
           return {
             value: opt.value,
             labelAr: opt.labelAr,
             count: c,
-            percentage: total > 0 ? Math.round((c / total) * 10000) / 100 : 0,
+            percentage:
+              perQuestionSuppressed || total === 0
+                ? 0
+                : Math.round((c / total) * 10000) / 100,
           };
         });
 
@@ -105,9 +115,11 @@ export const GET = apiHandler(
           distribution.push({
             value,
             labelAr: value,
-            count: c,
+            count: perQuestionSuppressed ? 0 : c,
             percentage:
-              total > 0 ? Math.round((c / total) * 10000) / 100 : 0,
+              perQuestionSuppressed || total === 0
+                ? 0
+                : Math.round((c / total) * 10000) / 100,
           });
         }
       }
@@ -120,6 +132,7 @@ export const GET = apiHandler(
         dimension: snap.dimension,
         total,
         distribution,
+        perQuestionSuppressed,
       };
     });
 

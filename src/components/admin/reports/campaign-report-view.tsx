@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
+  ArrowLeft,
   ChevronDown,
   Download,
   FileSpreadsheet,
@@ -377,7 +378,7 @@ export function CampaignReportView({ campaignId }: { campaignId: string }) {
                         }
                       >
                         عرض التقرير التفصيلي
-                        <ArrowRight className="h-4 w-4" />
+                        <ArrowLeft className="h-4 w-4" />
                       </Button>
                     </div>
                   ))}

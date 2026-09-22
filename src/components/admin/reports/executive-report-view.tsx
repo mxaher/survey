@@ -77,6 +77,7 @@ type QuestionAggregate = {
   distribution: DistributionEntry[];
   favorableRate: number | null;
   notApplicableCount: number;
+  perQuestionSuppressed?: boolean;
 };
 
 type DimensionAggregate = {
@@ -559,6 +560,7 @@ export function ExecutiveReportView({
 function QuestionRow({ question }: { question: QuestionAggregate }) {
   const dist = question.distribution.filter((d) => d.count > 0);
   const hasData = dist.length > 0;
+  const suppressed = question.perQuestionSuppressed === true;
 
   const chartData = question.distribution.map((d) => ({
     label: d.labelAr,
@@ -573,13 +575,18 @@ function QuestionRow({ question }: { question: QuestionAggregate }) {
             {question.questionAr}
           </span>
           <span className="mt-0.5 text-xs text-muted-foreground">
-            المتوسط: {formatAvg(question.averageScore)} • نسبة الإيجابية:{" "}
-            {formatPct(question.favorableRate)} • عدد الإجابات: {question.count}
+            {suppressed
+              ? `عدد الإجابات: ${question.count} — أقل من حد الإخفاء، تم إخفاء التفاصيل`
+              : `المتوسط: ${formatAvg(question.averageScore)} • نسبة الإيجابية: ${formatPct(question.favorableRate)} • عدد الإجابات: ${question.count}`}
           </span>
         </div>
-        <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+        {suppressed ? (
+          <Lock className="h-4 w-4 text-muted-foreground shrink-0" />
+        ) : (
+          <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform [[data-state=open]_&]:rotate-180" />
+        )}
       </CollapsibleTrigger>
-      {hasData && (
+      {hasData && !suppressed && (
         <CollapsibleContent>
           <div className="mt-4 flex flex-col gap-4">
             <div className="h-44 w-full">

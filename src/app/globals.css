@@ -155,8 +155,147 @@
   background: var(--muted-foreground);
 }
 
-/* Print-friendly reports */
+/* Print-friendly reports — hides chrome, expands content, forces colors
+ * to print correctly, and ensures page breaks don't land inside cards. */
 @media print {
+  /* Hide all interactive chrome. */
   .no-print { display: none !important; }
-  body { background: white !important; }
+
+  /* Force light background + dark text for paper. */
+  body {
+    background: white !important;
+    color: #111 !important;
+    font-size: 11pt;
+    line-height: 1.5;
+  }
+
+  /* Force the theme variables to print-safe values (override :root). */
+  :root {
+    --background: #fff;
+    --foreground: #111;
+    --card: #fff;
+    --card-foreground: #111;
+    --muted: #f5f5f5;
+    --muted-foreground: #444;
+    --border: #ccc;
+    --primary: #1f2937;
+    --primary-foreground: #fff;
+  }
+
+  /* Header / sidebar / footer hidden. */
+  header,
+  aside,
+  footer {
+    display: none !important;
+  }
+
+  /* Main content: full width, no padding restrictions. */
+  main {
+    padding: 0 !important;
+    max-width: 100% !important;
+  }
+
+  /* Cards: remove shadows + rounded corners, add a thin border. */
+  .rounded-xl,
+  .rounded-lg,
+  .rounded-md {
+    border-radius: 4px !important;
+    box-shadow: none !important;
+  }
+
+  /* Force colored backgrounds to print (browsers strip them by default). */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Avoid breaking inside cards/tables/charts. */
+  [data-print-block],
+  .print-block,
+  table,
+  figure {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* Cards get a visible separator. */
+  [role="status"],
+  section,
+  .rounded-xl,
+  .rounded-lg {
+    border: 1px solid #ccc !important;
+    margin-bottom: 12pt;
+  }
+
+  /* Charts: ensure they don't overflow the page. */
+  .recharts-wrapper,
+  .recharts-surface {
+    max-width: 100% !important;
+  }
+
+  /* Page margins. */
+  @page {
+    margin: 1.5cm 1.5cm 2cm;
+  }
+
+  /* Collapsible content: expand everything when printing. */
+  [data-state="closed"] [data-radix-collection-item],
+  [data-state] > div {
+    display: block !important;
+  }
+
+  /* Stat cards: shrink to fit on a 2-column print layout. */
+  .grid-cols-1,
+  .grid-cols-2,
+  .grid-cols-3,
+  .grid-cols-4,
+  .sm\:grid-cols-2,
+  .sm\:grid-cols-3,
+  .sm\:grid-cols-4,
+  .lg\:grid-cols-3,
+  .lg\:grid-cols-4 {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8pt !important;
+  }
+
+  /* Buttons lose their styling on paper. */
+  button {
+    background: transparent !important;
+    color: #111 !important;
+    border: 1px solid #ccc !important;
+    padding: 2pt 6pt !important;
+    font-size: 9pt !important;
+  }
+
+  /* Hide lucide icons that don't carry information. */
+  svg.lucide {
+    opacity: 0.5;
+  }
+
+  /* Tooltips + popovers hidden. */
+  [role="tooltip"],
+  [data-radix-popper-content-wrapper] {
+    display: none !important;
+  }
+
+  /* Headings: bigger, darker. */
+  h1 { font-size: 20pt; font-weight: 800; }
+  h2 { font-size: 16pt; font-weight: 700; }
+  h3 { font-size: 13pt; font-weight: 700; }
+  h4 { font-size: 11pt; font-weight: 700; }
+
+  /* Tables: tighter borders, smaller font. */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th, td {
+    border: 1px solid #ccc !important;
+    padding: 4pt 6pt !important;
+    font-size: 9pt;
+  }
+  th {
+    background: #f0f0f0 !important;
+  }
 }

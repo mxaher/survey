@@ -24,7 +24,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft,
+  ArrowRight,
   CalendarClock,
   Copy,
   Eye,
@@ -151,7 +151,7 @@ export function CampaignDetailHeader({
                   size="sm"
                   onClick={() => router.push("/?view=admin&tab=campaigns")}
                 >
-                  <ArrowLeft className="h-4 w-4" />
+                  <ArrowRight className="h-4 w-4" />
                   عودة للقائمة
                 </Button>
                 <Button

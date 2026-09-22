@@ -174,6 +174,14 @@ export const GET = apiHandler(
         (r) => r.selectedValue === "not_applicable"
       ).length;
 
+      // Per-question threshold suppression: if this individual question has
+      // fewer responses than the campaign threshold (e.g., because some
+      // evaluators skipped it or marked N/A and the question is one of the
+      // few with a lower response rate), mask the detailed numbers. The
+      // question text + raw count are still returned so the UI can show
+      // "أقل من حد الإخفاء" without leaking the distribution.
+      const perQuestionSuppressed = count < threshold;
+
       const optionBuckets = new Map<string, number>();
       for (const r of rows) {
         optionBuckets.set(
@@ -187,19 +195,24 @@ export const GET = apiHandler(
         .map((opt) => ({
           value: opt.value,
           labelAr: opt.labelAr,
-          count: optionBuckets.get(opt.value) ?? 0,
+          count: perQuestionSuppressed ? 0 : (optionBuckets.get(opt.value) ?? 0),
         }));
       const knownValues = new Set(snap.options.map((o) => o.value));
       for (const [value, c] of optionBuckets) {
         if (!knownValues.has(value)) {
-          distribution.push({ value, labelAr: value, count: c });
+          distribution.push({
+            value,
+            labelAr: value,
+            count: perQuestionSuppressed ? 0 : c,
+          });
         }
       }
 
       questionAverages.set(snap.id, {
         snapshotId: snap.id,
         dimension: snap.dimension,
-        averageScore,
+        // Only contribute to the dimension rollup if not suppressed.
+        averageScore: perQuestionSuppressed ? null : averageScore,
       });
 
       return {
@@ -209,10 +222,11 @@ export const GET = apiHandler(
         dimension: snap.dimension,
         count,
         validCount,
-        averageScore,
+        averageScore: perQuestionSuppressed ? null : averageScore,
         distribution,
-        favorableRate,
-        notApplicableCount,
+        favorableRate: perQuestionSuppressed ? null : favorableRate,
+        notApplicableCount: perQuestionSuppressed ? 0 : notApplicableCount,
+        perQuestionSuppressed,
       };
     });
 

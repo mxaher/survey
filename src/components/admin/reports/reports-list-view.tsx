@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { BarChart3, Eye, FolderKanban, Search } from "lucide-react";
+import { BarChart3, Eye, FolderKanban, GitCompareArrows, Search } from "lucide-react";
 
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -98,6 +98,18 @@ export function ReportsListView() {
       <PageHeader
         title="النتائج / التقارير"
         description="عرض تقارير الحملات وتحليلاتها التفصيلية بصورة إجمالية مع الحفاظ على سرية المشاركين."
+        actions={
+          <Button
+            variant="outline"
+            onClick={() =>
+              router.push("/?view=admin&tab=reports&sub=trend")
+            }
+            className="min-h-11"
+          >
+            <GitCompareArrows className="h-4 w-4" />
+            مقارنة الحملات
+          </Button>
+        }
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

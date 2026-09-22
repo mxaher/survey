@@ -93,6 +93,10 @@ const ExecutiveReportView = dynamic(
   () => import("@/components/admin/reports/executive-report-view").then((m) => m.ExecutiveReportView),
   { ssr: false }
 );
+const TrendReportView = dynamic(
+  () => import("@/components/admin/reports/trend-report-view").then((m) => m.TrendReportView),
+  { ssr: false }
+);
 const AuditView = dynamic(
   () => import("@/components/admin/audit/audit-view").then((m) => m.AuditView),
   { ssr: false }
@@ -171,6 +175,7 @@ export function AdminApp() {
     case "reports":
       if (sub === "campaign" && id) content = <CampaignReportView campaignId={id} />;
       else if (sub === "executive" && id && execId) content = <ExecutiveReportView campaignId={id} executiveId={execId} />;
+      else if (sub === "trend") content = <TrendReportView />;
       else content = <ReportsListView />;
       break;
     case "audit":      content = <AuditView />; break;

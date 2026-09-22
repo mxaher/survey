@@ -487,3 +487,93 @@ Task: QA via agent-browser + VLM screenshot analysis → styling improvements + 
 3. Add a campaign trend/comparison view when multiple closed campaigns exist (spec §16 mentions "Trend vs. prior campaigns, once more than one exists").
 4. Add a "print-friendly" CSS pass for the executive report (currently `window.print()` works but the layout isn't optimized for paper).
 5. Audit all directional arrow icons for RTL correctness (VLM flagged this — some "back" arrows may need mirroring).
+
+---
+Task ID: 6 (cron-triggered review round 2)
+Agent: main (orchestrator, cron job 404970)
+Task: QA via agent-browser → per-question suppression consistency + campaign trend view + print CSS + RTL arrow audit.
+
+## Current project status (assessment)
+- Round 1 (Task 5) shipped: status badges, stat cards, page header, step indicator, scale radios, question cards, survey intro, exec report chart, XLSX export, per-question suppression (environment only), dashboard org-wide widget.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 1 worklog flagged 5 priorities for round 2; this round addressed 4 of them.
+
+## Round 2 goals
+1. **Per-question suppression consistency** — apply to `/future` and `/executive/[executiveId]` endpoints (round 1 only did `/environment`).
+2. **Campaign trend/comparison view** — spec §16: "Trend vs. prior campaigns, once more than one exists".
+3. **Print-friendly CSS pass** — `window.print()` works but layout wasn't optimized for paper.
+4. **RTL arrow icon audit** — VLM flagged inconsistent directionality in round 1.
+
+## Completed modifications
+
+### 1. Per-question threshold suppression (consistency)
+- **`src/app/api/admin/reports/[campaignId]/future/route.ts`** — Added `perQuestionSuppressed: boolean` to each question aggregate. When `total < threshold`, masks distribution counts + percentages (returns 0s) but keeps the question text + raw total. UI shows lock icon + "أقل من حد الإخفاء" message.
+- **`src/app/api/admin/reports/[campaignId]/executive/[executiveId]/route.ts`** — Same treatment for per-exec leadership questions. Additionally: suppressed questions are excluded from the dimension-rollup denominator (so a low-N question can't pull a dimension's average down). Returns `perQuestionSuppressed` flag.
+- **`src/components/admin/reports/executive-report-view.tsx`** — `QuestionRow` now surfaces per-question suppression: shows a Lock icon instead of ChevronDown, displays "أقل من حد الإخفاء، تم إخفاء التفاصيل" message, and skips rendering the collapsible chart + table for suppressed questions.
+- **`src/components/admin/reports/campaign-report-view.tsx`** — Already handled env in round 1; the `QuestionAggregate` type already had `perQuestionSuppressed?: boolean` so the future + executive report API changes are now consumed correctly by the existing UI.
+
+### 2. Campaign trend / comparison view (new feature)
+- **`src/app/api/admin/reports/trend/route.ts`** (new) — `GET /api/admin/reports/trend`. Returns, for every active OR closed campaign:
+  - campaign metadata (id, titleAr, status, startsAt, endsAt, activatedAt, timezone, threshold)
+  - totalResponses, environmentSubmittedCount, futureSubmittedCount, executiveEvaluationCount
+  - distinctEvaluators (computed via a `(campaignId, employeeHmac)` groupBy — HMAC values themselves are NEVER returned, only the per-campaign count)
+  - dimensionAverages: per-campaign per-dimension averages respecting each campaign's per-exec threshold (same algorithm as the dashboard org-wide widget)
+- **`src/components/admin/reports/trend-report-view.tsx`** (new) — `export function TrendReportView()`. Renders:
+  - 4 aggregate StatCards (campaigns / total responses / total evaluators / total exec evals) with tone colors.
+  - A comparison table: one row per campaign with status badge + activated date + participation counts + "عرض" button linking to the campaign report.
+  - A Recharts `LineChart` comparing per-dimension averages across campaigns (one line per campaign, with a reference line at score 3 = neutral). Legend maps campaign IDs to titles.
+  - Per-dimension trend cards: one per dimension, showing each campaign's average + a trend icon (TrendingUp/TrendingDown/Minus) + delta (first → last campaign).
+  - Empty state when no comparable campaigns exist.
+  - Methodology disclaimer Alert: "لا يتم ترتيب المسؤولين أو الحملات ضد بعضهم البعض".
+- **`src/components/admin/admin-app.tsx`** — Added `?view=admin&tab=reports&sub=trend` route + dynamic import for `TrendReportView`.
+- **`src/components/admin/reports/reports-list-view.tsx`** — Added a "مقارنة الحملات" button (GitCompareArrows icon) in the PageHeader actions that links to the trend view.
+
+### 3. Print-friendly CSS pass (styling)
+- **`src/app/globals.css`** — Massively expanded the `@media print` block:
+  - Forces light background + dark text + 11pt font + 1.5 line-height.
+  - Overrides `:root` CSS variables to print-safe values (white bg, dark text, light borders).
+  - Hides `header`, `aside`, `footer` (sidebar/nav chrome).
+  - Removes shadows + rounded corners from cards; adds thin borders.
+  - Forces `print-color-adjust: exact` so colored badges/bars print correctly.
+  - `break-inside: avoid` on tables/figures/cards so page breaks don't split them.
+  - Sets `@page { margin: 1.5cm }`.
+  - Expands collapsible content (so all questions print, not just the open one).
+  - Grids collapse to 2 columns for print.
+  - Buttons lose their styling (transparent bg, thin border, small font).
+  - Lucide icons dimmed to 50% opacity.
+  - Tooltips/popovers hidden.
+  - Headings scaled up (h1=20pt, h2=16pt, h3=13pt, h4=11pt).
+  - Tables get full-width borders + 9pt font + grey header bg.
+- Added `no-print` class to the "قائمة التقارير" back button + methodology Alert in trend-report-view so they don't print.
+
+### 4. RTL arrow icon audit + fixes
+Audited every `ArrowLeft` / `ArrowRight` usage across admin + employee components. Rule applied: in RTL Arabic, "back/return" actions point right (→) and "forward/open" actions point left (←). Fixed 3 inconsistencies:
+- **`src/components/admin/campaigns/campaign-detail-header.tsx`** — "عودة للقائمة" (Back to list) was using `ArrowLeft` → changed to `ArrowRight`. Swapped the import.
+- **`src/components/admin/reports/trend-report-view.tsx`** — "قائمة التقارير" (Back to reports list) was using `ArrowLeft` → changed to `ArrowRight`. Swapped the import.
+- **`src/components/admin/reports/campaign-report-view.tsx`** — "عرض التقرير التفصيلي" (View detailed report — a forward action) was using `ArrowRight` → changed to `ArrowLeft`. Added the import.
+- Confirmed correct: dashboard "فتح الحملة" (ArrowLeft=forward ✓), survey-wizard "التالي"/"إرسال ومتابعة" (ArrowLeft=forward ✓), impersonation-banner "الانتقال إلى لوحة الإدارة" (ArrowLeft=forward ✓), executive-editor + question-editor "عودة للقائمة" (ArrowRight=back ✓).
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all 10 view combinations return HTTP 200 (employee, admin, dashboard, campaigns, questions, executives, reports, reports/trend, audit, settings).
+- agent-browser walkthrough confirmed:
+  - Trend view renders with 4 StatCards, comparison table, line chart (1 campaign = 1 line), and 9 per-dimension trend cards with trend icons.
+  - Campaign report still renders correctly with both export buttons.
+  - Reports list has the new "مقارنة الحملات" button.
+- API verification:
+  - `GET /api/admin/reports/trend` returns 1 campaign, 1296 responses, 6 distinct evaluators, 9 dimensions.
+  - `GET /api/admin/reports/[id]/executive/[execId]` returns 36 questions with `perQuestionSuppressed: false` (count=6 ≥ threshold=5) and populated `averageScore`.
+- VLM (glm-5v-turbo) cross-checked the campaign report screenshot and confirmed clean layout + visible Excel button.
+
+## Unresolved issues / risks
+- **DnD-kit on campaign-detail questions assignment tab** — handles exist ("اسحب لإعادة الترتيب") but are disabled for the active campaign (correct per spec §7). Need to test on a draft campaign to confirm DnD actually persists reorder. Deferred to next round.
+- **Save/resume draft** still returns 501 from `/api/employee/draft` — architectural decision pending (would re-couple identity to answer content).
+- **Real SSO/IdP** still uses dev-mode cookie impersonation (spec §6). Not feasible in this sandbox.
+- **Per-question suppression UX** — currently the campaign-report-view only handles env per-question suppression in the QuestionRow component; the future section's QuestionRow may need the same Lock icon treatment. Need to verify the shared QuestionRow handles both env + future + exec contexts.
+
+## Priority recommendations for next round
+1. Verify DnD-kit reorder persists on a draft campaign (create a new draft, assign questions, drag to reorder, refresh).
+2. Apply the Lock-icon per-question suppression UX uniformly to the future-section QuestionRow in campaign-report-view (currently only env + exec have it).
+3. Add a "download chart as PNG" button to the executive report chart (Recharts supports this via `getCanvasBase64`).
+4. Add a campaign status filter to the trend view (so you can compare only closed campaigns, excluding active).
+5. Consider adding a "participation rate" metric to the trend view (distinct evaluators / total eligible employees) — requires knowing the eligible employee count, which isn't currently tracked.
