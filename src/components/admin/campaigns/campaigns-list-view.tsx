@@ -37,6 +37,7 @@ import { useState } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { EmptyState } from "@/components/shared/empty-state";
+
 import {
   Table,
   TableBody,
@@ -328,7 +329,14 @@ export function CampaignsListView() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <StatusBadge status={c.status} />
+                        <div className="flex items-center gap-2">
+                          <HealthDot
+                            status={c.status}
+                            responses={c.counts.responses}
+                            threshold={c.minimumReportingThreshold}
+                          />
+                          <StatusBadge status={c.status} />
+                        </div>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {toRiyadhDate(c.startsAt)}
@@ -537,5 +545,63 @@ function ReadinessIssuesDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Campaign health indicator — a colored dot + tooltip showing the
+ * participation level relative to the campaign's threshold.
+ *
+ *  - "healthy" (emerald): responses ≥ threshold × 3 (strong participation)
+ *  - "active" (sky):       responses ≥ threshold × 2 (good participation)
+ *  - "low" (amber):        responses ≥ threshold (meets minimum)
+ *  - "weak" (rose):        responses < threshold (below minimum — reports suppressed)
+ *  - "idle" (slate):       draft/scheduled (no responses yet)
+ *
+ * Never color-only — always paired with the StatusBadge text label. */
+function HealthDot({
+  status,
+  responses,
+  threshold,
+}: {
+  status: string;
+  responses: number;
+  threshold: number;
+}) {
+  if (status === "draft" || status === "scheduled") {
+    return (
+      <span
+        className="inline-block h-2 w-2 rounded-full bg-slate-400"
+        title="حملة لم تُفعَّل بعد"
+        aria-label="حملة لم تُفعَّل بعد"
+      />
+    );
+  }
+  let level: "healthy" | "active" | "low" | "weak";
+  let color: string;
+  let label: string;
+  if (responses >= threshold * 3) {
+    level = "healthy";
+    color = "bg-emerald-500";
+    label = `مشاركة قوية (${responses} إجابة)`;
+  } else if (responses >= threshold * 2) {
+    level = "active";
+    color = "bg-sky-500";
+    label = `مشاركة جيدة (${responses} إجابة)`;
+  } else if (responses >= threshold) {
+    level = "low";
+    color = "bg-amber-500";
+    label = `مشاركة ضمن الحد الأدنى (${responses} إجابة)`;
+  } else {
+    level = "weak";
+    color = "bg-rose-500";
+    label = `مشاركة أقل من الحد (${responses} من ${threshold})`;
+  }
+  const pulse = level === "healthy" ? "animate-pulse" : "";
+  return (
+    <span
+      className={`inline-block h-2 w-2 rounded-full ${color} ${pulse}`}
+      title={label}
+      aria-label={label}
+    />
   );
 }

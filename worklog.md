@@ -766,3 +766,78 @@ Audited `src/components/admin/reports/campaign-report-view.tsx` QuestionRow (lin
 3. Add a "density toggle" to the campaigns list (compact/comfortable) — useful when there are many campaigns.
 4. Add a "recent activity" widget to the dashboard showing the last 5 audit entries (quick admin overview).
 5. Consider adding a "campaign health" indicator to the campaigns list (e.g., a colored dot showing participation rate vs threshold).
+
+---
+Task ID: 9 (cron-triggered review round 5)
+Agent: main (orchestrator, cron job 404970)
+Task: Trend XLSX export + dashboard recent activity widget + campaign health indicator + shared audit-display helpers.
+
+## Current project status (assessment)
+- Round 4 (Task 8) shipped: DnD verification, trend CSV export, participation rate over time chart, audit view polish, empty-state animation.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 4 worklog flagged 5 priorities for round 5; this round addressed 3 of them.
+
+## Round 5 goals
+1. **Add XLSX export to trend view** (round 4 priority #1).
+2. **Add recent activity widget to dashboard** (round 4 priority #4).
+3. **Add campaign health indicator to campaigns list** (round 4 priority #5).
+4. **Refactor**: extract `actionTone` + `ENTITY_LABELS_AR` into a shared lib (used by both audit view + dashboard widget).
+
+## Completed modifications
+
+### 1. Trend XLSX export (new feature)
+- **`src/app/api/admin/reports/trend/export/route.ts`** — Refactored to support both `csv` and `xlsx` formats via `?format=` query param. Extracted the aggregation logic into a shared `computeTrendRows()` function. XLSX output is a 2-sheet workbook:
+  - "ملخص المقارنة" — same data as CSV (one row per campaign, all participation counts + 9 dimension averages).
+  - "متوسطات الأبعاد" — transposed view (one row per dimension, columns per campaign) for easier side-by-side comparison.
+  - Workbook marked RTL (`Views: [{ RTL: true }]`), columns auto-sized, compression on.
+  - Audited as `report.export` with `format: "xlsx", scope: "trend"`.
+- **`src/components/admin/reports/trend-report-view.tsx`** — Added "تصدير Excel" button (FileSpreadsheet icon, default variant) next to the existing "تصدير CSV" button. Both respect the current status filter.
+- Verified: 11KB valid Excel file, correct MIME type, opens as "Microsoft Excel 2007+".
+
+### 2. Dashboard recent activity widget (new feature)
+- **`src/app/api/admin/dashboard/route.ts`** — Added `recentActivity` to the response: last 5 audit entries with admin user display name + role. Implementation note: `AuditLog` has no Prisma relation to `AdminUser` (intentional — keeps the audit log decoupled), so the endpoint fetches admin users separately and joins in JS.
+- **`src/components/admin/dashboard/dashboard-view.tsx`** — Added a new Card "آخر النشاطات" (with ScrollText icon) before the dev impersonation panel. Renders an ordered list of 5 entries, each with:
+  - Semantic action badge (emerald/sky/amber/rose/violet/slate/primary via `actionTone()`).
+  - Admin display name + role (Arabic label "مدير عام" / "مدير استبيان").
+  - Entity type in Arabic (via `ENTITY_LABELS_AR`).
+  - Campaign ID (first 8 chars, mono font) if present.
+  - Timestamp (Riyadh timezone, tabular-nums).
+  - "عرض السجل الكامل" button at the bottom → links to `?view=admin&tab=audit`.
+- VLM confirmed: widget visible at the bottom, 5 entries with action badges, button present.
+
+### 3. Campaign health indicator (new feature)
+- **`src/components/admin/campaigns/campaigns-list-view.tsx`** — Added `HealthDot` component rendered next to the `StatusBadge` in the status column. Computes a 4-level health rating:
+  - "healthy" (emerald, pulsing): responses ≥ threshold × 3 (strong participation)
+  - "active" (sky): responses ≥ threshold × 2 (good participation)
+  - "low" (amber): responses ≥ threshold (meets minimum)
+  - "weak" (rose): responses < threshold (below minimum — reports suppressed)
+  - "idle" (slate): draft/scheduled (no responses yet)
+  - Never color-only — always paired with the StatusBadge text label, and the dot has `title` + `aria-label` for accessibility (tooltip shows the Arabic description + count).
+- Verified: active campaign with 1396 responses shows emerald pulsing dot with tooltip "مشاركة قوية (1396 إجابة)".
+
+### 4. Shared audit-display helpers (refactor)
+- **`src/lib/audit-display.ts`** (new) — Extracted `actionTone(action)` + `ENTITY_LABELS_AR` map from the audit-view component into a shared lib file, so both the audit view (full table) and the dashboard's recent activity widget can import them without duplicating the tone/label logic.
+- **`src/components/admin/audit/audit-view.tsx`** — Removed the duplicate `actionTone` + `ENTITY_LABELS_AR` definitions; now imports from `@/lib/audit-display`.
+- **`src/components/admin/dashboard/dashboard-view.tsx`** — Imports `actionTone` + `ENTITY_LABELS_AR` from `@/lib/audit-display` for the recent activity widget.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, trend).
+- **Trend XLSX export verified**: 11KB valid Excel file with 2 sheets, correct MIME type.
+- **Recent activity widget verified**: dashboard shows 5 audit entries with semantic action badges + admin names + entity types + timestamps + "عرض السجل الكامل" button. VLM confirmed the widget renders correctly.
+- **Campaign health indicator verified**: active campaign shows emerald pulsing dot with tooltip "مشاركة قوية (1396 إجابة)" next to the "نشطة" status badge.
+- **Dashboard endpoint fix**: initial implementation used `include: { adminUser: ... }` on `AuditLog` which has no Prisma relation → 500 error. Fixed by fetching admin users separately + joining in JS.
+- agent-browser walkthrough confirmed all views render without errors.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Chart PNG on campaign-report per-question charts** — still deferred (round 3 priority #3).
+- **Density toggle on campaigns list** — round 4 priority #3, deferred this round.
+
+## Priority recommendations for next round
+1. Add chart PNG download to the campaign-report per-question charts (round 3 deferred).
+2. Add a density toggle to the campaigns list (compact/comfortable).
+3. Add a "campaign comparison" export that includes the participation-rate-over-time chart as a PNG image embedded in the XLSX.
+4. Add a "system health" widget to the dashboard (DB size, total campaigns, last backup time) — requires a new endpoint.
+5. Consider adding a "quick search" command palette (Cmd+K) for fast navigation between campaigns/questions/executives.

@@ -90,6 +90,42 @@ export const GET = apiHandler(async () => {
       ? Math.round((distinctEvaluatorCount / eligibleCount) * 10000) / 100
       : null;
 
+  // ─── Recent activity (last 5 audit entries) ────────────────────────
+  // Used by the dashboard "آخر النشاطات" widget. Never includes employee
+  // data — audit logs only contain admin actions + entity references.
+  // AuditLog has no Prisma relation to AdminUser (intentional — keeps the
+  // audit log decoupled), so we fetch the admin users separately and join
+  // in JS.
+  const recentActivityRaw = await db.auditLog.findMany({
+    take: 5,
+    orderBy: { createdAt: "desc" },
+  });
+  const adminIds = Array.from(
+    new Set(
+      recentActivityRaw
+        .map((a) => a.adminUserId)
+        .filter((id): id is string => id !== null)
+    )
+  );
+  const adminUsers = await db.adminUser.findMany({
+    where: { id: { in: adminIds } },
+    select: { id: true, displayName: true, externalId: true, role: true },
+  });
+  const adminUserById = new Map(adminUsers.map((u) => [u.id, u]));
+  const recentActivity = recentActivityRaw.map((a) => {
+    const u = a.adminUserId ? adminUserById.get(a.adminUserId) : null;
+    return {
+      id: a.id,
+      action: a.action,
+      entityType: a.entityType,
+      entityId: a.entityId,
+      campaignId: a.campaignId,
+      createdAt: a.createdAt,
+      adminDisplayName: u?.displayName ?? u?.externalId ?? "—",
+      adminRole: u?.role ?? null,
+    };
+  });
+
   // Latest campaign snapshot (most recent by createdAt).
   let latestCampaign: {
     id: string;
@@ -248,6 +284,7 @@ export const GET = apiHandler(async () => {
         distinctEvaluators: distinctEvaluatorCount,
         rate: participationRate,
       },
+      recentActivity,
     });
   }
 
@@ -266,5 +303,6 @@ export const GET = apiHandler(async () => {
       distinctEvaluators: distinctEvaluatorCount,
       rate: participationRate,
     },
+    recentActivity,
   });
 });

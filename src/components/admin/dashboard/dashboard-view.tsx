@@ -22,10 +22,12 @@ import {
   X,
   FlaskConical,
   ArrowLeft,
+  ArrowRight,
   TrendingUp,
   TrendingDown,
   Minus,
   Percent,
+  ScrollText,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -56,6 +58,7 @@ import { useToast } from "@/hooks/use-toast";
 import { CAMPAIGN_STATUSES } from "@/lib/constants";
 import { toRiyadhDisplay } from "@/lib/time";
 import { MESSAGES } from "@/lib/messages";
+import { ENTITY_LABELS_AR, actionTone } from "@/lib/audit-display";
 
 interface OrgDimension {
   dimension: string;
@@ -85,6 +88,16 @@ interface DashboardData {
     distinctEvaluators: number;
     rate: number | null;
   };
+  recentActivity?: Array<{
+    id: string;
+    action: string;
+    entityType: string;
+    entityId: string | null;
+    campaignId: string | null;
+    createdAt: string;
+    adminDisplayName: string;
+    adminRole: string | null;
+  }>;
 }
 
 interface ImpersonationData {
@@ -128,6 +141,7 @@ export function DashboardView() {
   const latest = data?.data?.latestCampaign ?? null;
   const orgDims = data?.data?.orgDimensions ?? [];
   const participation = data?.data?.participation ?? null;
+  const recentActivity = data?.data?.recentActivity ?? [];
   // Top 3 + bottom 3 dimensions (already sorted desc by the backend).
   const orgStrengths = orgDims.slice(0, 3);
   const orgImprovements = orgDims
@@ -423,6 +437,73 @@ export function DashboardView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Recent activity widget */}
+      {!isLoading && recentActivity.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ScrollText className="h-5 w-5 text-primary" />
+              آخر النشاطات
+            </CardTitle>
+            <CardDescription>
+              أحدث 5 عمليات إدارية مسجَّلة في النظام.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ol className="flex flex-col gap-3">
+              {recentActivity.map((a) => {
+                const tone = actionTone(a.action);
+                return (
+                  <li
+                    key={a.id}
+                    className="flex items-start gap-3 rounded-lg border border-border bg-card/40 px-3 py-2.5"
+                  >
+                    <span
+                      className={`mt-0.5 inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${tone.cls}`}
+                    >
+                      {a.action}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-foreground">
+                        <span className="font-medium">{a.adminDisplayName}</span>
+                        {a.adminRole && (
+                          <span className="ms-1 text-xs text-muted-foreground">
+                            ({a.adminRole === "SUPER_ADMIN" ? "مدير عام" : "مدير استبيان"})
+                          </span>
+                        )}
+                      </p>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {ENTITY_LABELS_AR[a.entityType] ?? a.entityType}
+                        {a.campaignId && (
+                          <span className="font-mono ms-1">
+                            · حملة {a.campaignId.slice(0, 8)}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    <span
+                      className="shrink-0 text-xs text-muted-foreground tabular-nums whitespace-nowrap"
+                      style={{ fontFeatureSettings: '"tnum" 1' }}
+                    >
+                      {toRiyadhDisplay(a.createdAt)}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-3 w-full"
+              onClick={() => router.push("/?view=admin&tab=audit")}
+            >
+              عرض السجل الكامل
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Dev impersonation */}
       {process.env.NODE_ENV !== "production" && <DevImpersonationPanel />}

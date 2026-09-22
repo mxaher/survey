@@ -32,6 +32,7 @@ import {
   CalendarClock,
   ArrowRight,
   Download,
+  FileSpreadsheet,
 } from "lucide-react";
 import {
   Line,
@@ -253,13 +254,24 @@ export function TrendReportView() {
             <Button
               variant="outline"
               onClick={() => {
-                window.location.href = `/api/admin/reports/trend/export?status=${encodeURIComponent(statusFilter)}`;
+                window.location.href = `/api/admin/reports/trend/export?format=csv&status=${encodeURIComponent(statusFilter)}`;
               }}
               className="min-h-11"
               disabled={campaigns.length === 0}
             >
               <Download className="h-4 w-4" />
               تصدير CSV
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => {
+                window.location.href = `/api/admin/reports/trend/export?format=xlsx&status=${encodeURIComponent(statusFilter)}`;
+              }}
+              className="min-h-11"
+              disabled={campaigns.length === 0}
+            >
+              <FileSpreadsheet className="h-4 w-4" />
+              تصدير Excel
             </Button>
             <Button
               variant="ghost"
