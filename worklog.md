@@ -841,3 +841,72 @@ Task: Trend XLSX export + dashboard recent activity widget + campaign health ind
 3. Add a "campaign comparison" export that includes the participation-rate-over-time chart as a PNG image embedded in the XLSX.
 4. Add a "system health" widget to the dashboard (DB size, total campaigns, last backup time) — requires a new endpoint.
 5. Consider adding a "quick search" command palette (Cmd+K) for fast navigation between campaigns/questions/executives.
+
+---
+Task ID: 10 (cron-triggered review round 6)
+Agent: main (orchestrator, cron job 404970)
+Task: Per-question chart PNG download + system health widget + campaigns list density toggle.
+
+## Current project status (assessment)
+- Round 5 (Task 9) shipped: trend XLSX export, dashboard recent activity widget, campaign health indicator, shared audit-display helpers.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 5 worklog flagged 5 priorities for round 6; this round addressed 3 of them.
+
+## Round 6 goals
+1. **Add chart PNG download to campaign-report per-question charts** (round 3 deferred, round 5 priority #1).
+2. **Add system health widget to dashboard** (round 5 priority #4).
+3. **Add density toggle to campaigns list** (round 4 priority #3, deferred since).
+
+## Completed modifications
+
+### 1. Per-question chart PNG download (new feature)
+- **`src/components/admin/reports/campaign-report-view.tsx`** — Added to the `QuestionCard` component:
+  - `useRef<HTMLDivElement>` attached to the per-question distribution chart container.
+  - `downloadChartPng()` handler: serializes the SVG via `XMLSerializer`, loads into an `Image`, draws onto a 2× scale canvas with white background, then triggers a PNG download. Filename: `question-{questionCode or snapshotId}.png`.
+  - "تنزيل" button (ImageIcon, ghost variant, sm size) in the expanded question content, positioned next to the stat cards. Disabled when no data.
+  - Imports updated: added `useRef`, `Image as ImageIcon`.
+- Verified: expanding a question shows the "تنزيل" button.
+
+### 2. System health widget on dashboard (new feature)
+- **`src/app/api/admin/system-stats/route.ts`** (new) — `GET /api/admin/system-stats`. Returns:
+  - `dbSizeBytes` + `dbSizeLabel`: SQLite DB file size (read from `DATABASE_URL` env, `fs.promises.stat`). Human-readable label (B/KB/MB/GB).
+  - `tableCounts`: row counts for campaigns, executives, questions, responses, participationLedger, auditLogs, adminUsers, systemSettings, snapshots (batched via `Promise.all`).
+  - `lastAuditAt`: ISO timestamp of the most recent audit log entry.
+  - `serverTime`: current server time (UTC ISO).
+  - NO employee identifiers — `participationLedger` is only a count.
+- **`src/components/admin/dashboard/dashboard-view.tsx`** — Added:
+  - Separate `useQuery(["admin-system-stats"])` with `staleTime: 60_000` so the dashboard's main data loading isn't blocked by the DB-size stat call.
+  - New Card "صحة النظام" (Database icon) before the recent activity widget. Renders an 8-cell grid (2×4 on mobile, 4×2 on desktop) of `SystemStat` mini-cards: DB size, total campaigns, total executives, total questions, response records, participation records, admin users, audit log records.
+  - "آخر نشاط مسجَّل" footer with the last audit timestamp (Riyadh timezone).
+  - Added `Database` + `Clock` icon imports.
+  - Added `SystemStat` helper component (compact card with icon + label + value).
+- Verified: dashboard shows "صحة النظام" widget with DB size (940 KB), 8 table counts, and last audit timestamp. VLM confirmed.
+
+### 3. Campaigns list density toggle (new feature)
+- **`src/components/admin/campaigns/campaigns-list-view.tsx`** — Added:
+  - `useState<"comfortable" | "compact">("comfortable")` for `density`.
+  - A segmented toggle (two buttons in a bordered container) in the PageHeader actions: "مريح" (comfortable) / "مضغوط" (compact). Active state uses `bg-primary text-primary-foreground`.
+  - `TableRow` className now conditional on density: comfortable = `py-3` cells, compact = `py-1.5` cells + `text-xs`.
+  - Toggle persists for the session (React state, not persisted to localStorage — refresh resets to comfortable, which is the sensible default).
+- Verified: clicking "مضغوط" tightens the table row padding.
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, campaign report, trend).
+- **Per-question PNG download verified**: expanding a question shows the "تنزيل" button (ImageIcon).
+- **System health widget verified**: dashboard shows "صحة النظام" card with DB size (940 KB), 8 table counts, last audit timestamp. VLM confirmed both the system health widget and the recent activity widget render correctly.
+- **Density toggle verified**: "مريح" / "مضغوط" buttons render; clicking "مضغوط" tightens row padding.
+- **System-stats endpoint verified**: returns dbSize: 940 KB, all 9 table counts, lastAuditAt timestamp.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — round 5 priority #3, deferred.
+- **Cmd+K quick-search command palette** — round 5 priority #5, deferred.
+
+## Priority recommendations for next round
+1. Add a Cmd+K quick-search command palette for fast navigation between campaigns/questions/executives (round 5 priority #5).
+2. Add a campaign comparison export with the participation-rate chart embedded as a PNG image in the XLSX (round 5 priority #3).
+3. Add a "filter by health" dropdown on the campaigns list (filter to show only weak/low/healthy campaigns).
+4. Add a "last login" timestamp to the admin users table (requires tracking login events in the audit log).
+5. Consider adding a "campaign archive" view that shows historical (archived) campaigns in a read-only grid separate from the active list.

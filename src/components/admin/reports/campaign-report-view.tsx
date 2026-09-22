@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Download,
   FileSpreadsheet,
+  Image as ImageIcon,
   Lock,
   Printer,
   Users,
@@ -467,6 +468,7 @@ function QuestionCard({
 }) {
   const dist = question.distribution.filter((d) => d.count > 0);
   const hasData = dist.length > 0;
+  const chartRef = useRef<HTMLDivElement>(null);
   const chartData = useMemo(
     () =>
       question.distribution.map((d) => ({
@@ -476,6 +478,47 @@ function QuestionCard({
       })),
     [question]
   );
+
+  // Download the per-question distribution chart as a PNG. Same approach
+  // as the executive report's dimension chart: serialize SVG → Image →
+  // canvas → PNG download.
+  const downloadChartPng = () => {
+    const container = chartRef.current;
+    if (!container) return;
+    const svg = container.querySelector("svg");
+    if (!svg) return;
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const svgBlob = new Blob([svgData], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const scale = 2;
+      const w = svg.clientWidth || svg.parentElement?.clientWidth || 600;
+      const h = svg.clientHeight || svg.parentElement?.clientHeight || 224;
+      canvas.width = w * scale;
+      canvas.height = h * scale;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const dlUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = dlUrl;
+        a.download = `question-${question.questionCode ?? question.snapshotId.slice(0, 8)}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(dlUrl);
+      }, "image/png");
+    };
+    img.src = url;
+  };
 
   return (
     <Collapsible className="rounded-lg border border-border bg-background p-3">
@@ -505,27 +548,39 @@ function QuestionCard({
       {hasData && !question.perQuestionSuppressed && (
         <CollapsibleContent>
           <div className="mt-4 flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-              <Stat label="عدد الإجابات" value={String(question.count)} />
-              {isFuture ? null : (
-                <>
-                  <Stat
-                    label="إجابات صالحة"
-                    value={String(question.validCount)}
-                  />
-                  <Stat
-                    label="المتوسط"
-                    value={formatAvg(question.averageScore)}
-                  />
-                  <Stat
-                    label="لا ينطبق"
-                    value={String(question.notApplicableCount)}
-                  />
-                </>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                <Stat label="عدد الإجابات" value={String(question.count)} />
+                {isFuture ? null : (
+                  <>
+                    <Stat
+                      label="إجابات صالحة"
+                      value={String(question.validCount)}
+                    />
+                    <Stat
+                      label="المتوسط"
+                      value={formatAvg(question.averageScore)}
+                    />
+                    <Stat
+                      label="لا ينطبق"
+                      value={String(question.notApplicableCount)}
+                    />
+                  </>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={downloadChartPng}
+                className="min-h-9 text-xs"
+                title="تنزيل مخطط التوزيع كصورة PNG"
+              >
+                <ImageIcon className="h-3.5 w-3.5" />
+                تنزيل
+              </Button>
             </div>
 
-            <div className="h-56 w-full">
+            <div ref={chartRef} className="h-56 w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
                   data={chartData}

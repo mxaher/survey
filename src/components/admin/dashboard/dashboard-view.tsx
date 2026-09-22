@@ -28,6 +28,8 @@ import {
   Minus,
   Percent,
   ScrollText,
+  Database,
+  Clock,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -134,6 +136,23 @@ export function DashboardView() {
   }>({
     queryKey: ["admin-dashboard"],
     queryFn: () => fetchJson("/api/admin/dashboard"),
+  });
+
+  // System health stats — separate query so the dashboard's main data
+  // loading isn't blocked by the (potentially slow) DB-size stat call.
+  const { data: statsData } = useQuery<{
+    ok: boolean;
+    data: {
+      dbSizeBytes: number;
+      dbSizeLabel: string;
+      tableCounts: Record<string, number>;
+      lastAuditAt: string | null;
+      serverTime: string;
+    };
+  }>({
+    queryKey: ["admin-system-stats"],
+    queryFn: () => fetchJson("/api/admin/system-stats"),
+    staleTime: 60_000, // cache for 1 min — DB size doesn't change fast
   });
 
   const totals = data?.data?.totals;
@@ -437,6 +456,71 @@ export function DashboardView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* System health widget */}
+      {statsData?.data && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-primary" />
+              صحة النظام
+            </CardTitle>
+            <CardDescription>
+              حجم قاعدة البيانات وعدد السجلات في كل جدول رئيسي.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <SystemStat
+                label="حجم قاعدة البيانات"
+                value={statsData.data.dbSizeLabel}
+                icon={<Database className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="إجمالي الحملات"
+                value={statsData.data.tableCounts.campaigns ?? 0}
+                icon={<FolderKanban className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="إجمالي المسؤولين"
+                value={statsData.data.tableCounts.executives ?? 0}
+                icon={<Users className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="إجمالي الأسئلة"
+                value={statsData.data.tableCounts.questions ?? 0}
+                icon={<Library className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="سجلات الإجابات"
+                value={statsData.data.tableCounts.responses ?? 0}
+                icon={<MessageSquareText className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="سجلات المشاركة"
+                value={statsData.data.tableCounts.participationLedger ?? 0}
+                icon={<ClipboardList className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="مستخدمو الإدارة"
+                value={statsData.data.tableCounts.adminUsers ?? 0}
+                icon={<UserCog className="h-4 w-4" />}
+              />
+              <SystemStat
+                label="سجلات التدقيق"
+                value={statsData.data.tableCounts.auditLogs ?? 0}
+                icon={<ScrollText className="h-4 w-4" />}
+              />
+            </div>
+            {statsData.data.lastAuditAt && (
+              <p className="mt-4 text-xs text-muted-foreground flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5" />
+                آخر نشاط مسجَّل: {toRiyadhDisplay(statsData.data.lastAuditAt)}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Recent activity widget */}
       {!isLoading && recentActivity.length > 0 && (
@@ -752,6 +836,33 @@ function DimensionBar({
       <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
         {responseCount} إجابة
       </span>
+    </div>
+  );
+}
+
+/** Compact stat card for the system health widget — smaller than the
+ * main StatCard, tuned for the 2×4 grid layout. */
+function SystemStat({
+  label,
+  value,
+  icon,
+}: {
+  label: string;
+  value: string | number;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card/60 px-3 py-2.5 transition-colors hover:bg-card">
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        {icon}
+        <p className="text-[11px] font-medium leading-tight">{label}</p>
+      </div>
+      <p
+        className="mt-1 text-lg font-bold text-foreground tabular-nums"
+        style={{ fontFeatureSettings: '"tnum" 1' }}
+      >
+        {value}
+      </p>
     </div>
   );
 }

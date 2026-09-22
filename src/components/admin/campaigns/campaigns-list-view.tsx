@@ -159,6 +159,9 @@ export function CampaignsListView() {
     title: string;
     issues: ReadinessIssue[];
   } | null>(null);
+  const [density, setDensity] = useState<"comfortable" | "compact">(
+    "comfortable"
+  );
 
   const invalidateAll = () =>
     qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
@@ -245,16 +248,44 @@ export function CampaignsListView() {
         title="الحملات"
         description="إدارة حملات الاستبيان ودورة حياتها."
         actions={
-          <Button
-            onClick={() =>
-              router.push(
-                "/?view=admin&tab=campaigns&sub=editor&id=new"
-              )
-            }
-          >
-            <Plus className="h-4 w-4" />
-            حملة جديدة
-          </Button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-lg border border-border bg-card p-0.5 no-print">
+              <button
+                type="button"
+                onClick={() => setDensity("comfortable")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  density === "comfortable"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                aria-label="عرض مريح"
+              >
+                مريح
+              </button>
+              <button
+                type="button"
+                onClick={() => setDensity("compact")}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  density === "compact"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+                aria-label="عرض مضغوط"
+              >
+                مضغوط
+              </button>
+            </div>
+            <Button
+              onClick={() =>
+                router.push(
+                  "/?view=admin&tab=campaigns&sub=editor&id=new"
+                )
+              }
+            >
+              <Plus className="h-4 w-4" />
+              حملة جديدة
+            </Button>
+          </div>
         }
       />
 
@@ -309,7 +340,14 @@ export function CampaignsListView() {
                 {campaigns.map((c) => {
                   const busy = lifecycleMutation.isPending;
                   return (
-                    <TableRow key={c.id}>
+                    <TableRow
+                      key={c.id}
+                      className={
+                        density === "compact"
+                          ? "py-1 [&>td]:py-1.5 [&>td]:text-xs"
+                          : "py-2 [&>td]:py-3"
+                      }
+                    >
                       <TableCell>
                         <button
                           type="button"
