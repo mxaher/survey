@@ -910,3 +910,73 @@ Task: Per-question chart PNG download + system health widget + campaigns list de
 3. Add a "filter by health" dropdown on the campaigns list (filter to show only weak/low/healthy campaigns).
 4. Add a "last login" timestamp to the admin users table (requires tracking login events in the audit log).
 5. Consider adding a "campaign archive" view that shows historical (archived) campaigns in a read-only grid separate from the active list.
+
+---
+Task ID: 11 (cron-triggered review round 7)
+Agent: main (orchestrator, cron job 404970)
+Task: Cmd+K command palette + campaigns list health filter + admin header quick-search button.
+
+## Current project status (assessment)
+- Round 6 (Task 10) shipped: per-question chart PNG download, system health widget, campaigns list density toggle.
+- Lint clean. Dev server stable. All views HTTP 200.
+- Round 6 worklog flagged 5 priorities for round 7; this round addressed 2 of them.
+
+## Round 7 goals
+1. **Add Cmd+K quick-search command palette** (round 5 priority #5, deferred since).
+2. **Add filter-by-health dropdown on campaigns list** (round 6 priority #3).
+3. **Add quick-search button to admin header** (discoverability for the Cmd+K shortcut).
+
+## Completed modifications
+
+### 1. Cmd+K command palette (new feature)
+- **`src/app/api/admin/search/route.ts`** (new) — `GET /api/admin/search?q=<query>`. Global search across campaigns (title/description), questions (text/code), and executives (name/title/department). Returns up to 5 results per category (max 15 total). Uses Prisma `contains` for substring match. NO employee identifiers. Auth required.
+- **`src/components/admin/command-palette.tsx`** (new) — `export function CommandPalette()`. A Dialog-based command palette with:
+  - Global `Cmd+K` / `Ctrl+K` keyboard listener (window addEventListener).
+  - Search input with debounced TanStack Query (min 2 chars triggers API call).
+  - Results list: navigation items (always shown) + campaigns + questions + executives (when query ≥ 2 chars).
+  - Keyboard navigation: ↑/↓ to move, Enter to select + navigate, Escape to close.
+  - Active result highlighted with `bg-accent` + a `CornerDownLeft` icon hint.
+  - Footer with keyboard shortcut hints (↑↓ تنقل / ↵ اختيار / ⌘K فتح/إغلاق).
+  - Loading skeletons during fetch.
+  - Empty state when no results.
+  - Fixed two `react-hooks/set-state-in-effect` lint errors: moved the query/activeIndex reset into the `toggleOpen` callback (not an effect), and replaced the `useEffect` that reset activeIndex with a computed `safeActiveIndex` at render time.
+- **`src/components/admin/admin-app.tsx`** — Added `<CommandPalette />` at the end of the admin shell. Added `Search` icon import.
+- Verified: pressing Cmd+K opens the dialog; typing "الرئيس" finds "الرئيس التنفيذي"; nav items show when query is empty.
+
+### 2. Quick-search button in admin header (discoverability)
+- **`src/components/admin/admin-app.tsx`** — Added a "بحث سريع" button (outline variant, sm size) in the header before "عرض تجربة الموظف". Shows the Search icon + "بحث سريع" text + a `⌘K` kbd badge. Clicking it dispatches a synthetic `KeyboardEvent('keydown', { key: 'k', metaKey: true })` which the CommandPalette's global listener picks up — so users who don't know the shortcut can still open the palette.
+- Verified: button renders with the ⌘K badge.
+
+### 3. Campaigns list health filter (new feature)
+- **`src/components/admin/campaigns/campaigns-list-view.tsx`** — Added:
+  - `useState<string>("all")` for `healthFilter`.
+  - `healthLevel(c)` function computing the 5-level rating (idle/weak/low/active/healthy) — mirrors the HealthDot logic.
+  - `filteredCampaigns` computed from the health filter.
+  - A segmented filter bar (6 buttons: الكل / قوية / جيدة / ضمن الحد / أقل من الحد / لم تُفعَّل) with colored dots matching the HealthDot palette. Active state uses `bg-primary text-primary-foreground`.
+  - Filter count indicator: "(N من M)" when a filter is active.
+  - Empty-filtered state: "لا توجد حملات مطابقة لعامل التصفية الحالي." row in the table.
+  - Changed `campaigns.map` → `filteredCampaigns.map` with the conditional empty-row fallback.
+- Verified: filter bar renders with all 6 options; the active campaign shows emerald dot "قوية".
+
+## Verification results
+- `bun run lint` → 0 errors / 0 warnings.
+- Dev server: all views HTTP 200 (employee, dashboard, campaigns, trend, audit).
+- **Command palette verified**: Cmd+K opens the dialog; typing "الرئيس" finds "الرئيس التنفيذي" with subtitle "الرئيس التنفيذي — الرئيس التنفيذي — الإدارة العليا"; nav items show when query is empty.
+- **Quick-search button verified**: "بحث سريع ⌘K" button renders in the header; clicking it opens the palette.
+- **Health filter verified**: segmented filter bar renders with 6 options + colored dots; active campaign shows emerald "قوية".
+- **Search endpoint verified**: `GET /api/admin/search?q=test` returns `{ campaigns: [], questions: [], executives: [] }` (no matches for "test"); Arabic queries work via URL encoding.
+- Fixed 2 lint errors during development (set-state-in-effect) by moving resets into callbacks + computing safeActiveIndex at render time.
+
+## Unresolved issues / risks
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — round 5 priority #3, still deferred.
+- **Campaign archive view** — round 6 priority #5, deferred this round.
+- **Last login timestamp on admin users table** — round 6 priority #4, deferred.
+
+## Priority recommendations for next round
+1. Add a campaign archive view (read-only grid for archived campaigns, separate from active list) — round 6 priority #5.
+2. Add a "last login" timestamp to the admin users table (track login events in audit log) — round 6 priority #4.
+3. Add a campaign comparison export with the participation-rate chart embedded as a PNG image in the XLSX — round 5 priority #3.
+4. Add a "recently viewed" section to the command palette (localStorage-based, shows last 5 navigated items at the top).
+5. Consider adding keyboard shortcuts to the employee survey wizard (e.g., 1-5 to select scale options, Enter to advance).

@@ -36,6 +36,7 @@ import {
   ShieldCheck,
   ClipboardList,
   LogOut,
+  Search,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -47,6 +48,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Menu } from "lucide-react";
+import { CommandPalette } from "@/components/admin/command-palette";
 
 // Lazy-load each tab's content. Paths are the contract for the subagents.
 const DashboardView = dynamic(
@@ -249,6 +251,28 @@ export function AdminApp() {
       </div>
 
       <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          className="hidden md:flex gap-2 text-xs"
+          onClick={() => {
+            // Trigger the Cmd+K command palette by dispatching the same
+            // keyboard event the palette listens for.
+            const evt = new KeyboardEvent("keydown", {
+              key: "k",
+              metaKey: true,
+              bubbles: true,
+            });
+            window.dispatchEvent(evt);
+          }}
+          title="بحث سريع (Cmd+K)"
+        >
+          <Search className="h-3.5 w-3.5" />
+          <span>بحث سريع</span>
+          <kbd className="inline-flex h-4 select-none items-center gap-1 rounded border border-border bg-muted px-1 font-mono text-[10px] font-medium text-muted-foreground">
+            ⌘K
+          </kbd>
+        </Button>
         <a
           href="/?view=employee"
           className="hidden sm:flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
@@ -292,6 +316,7 @@ export function AdminApp() {
           © مجموعة المرشد — منصة الاستبيان المجهول
         </div>
       </footer>
+      <CommandPalette />
     </div>
   );
 }

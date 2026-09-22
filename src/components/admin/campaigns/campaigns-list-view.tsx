@@ -162,6 +162,23 @@ export function CampaignsListView() {
   const [density, setDensity] = useState<"comfortable" | "compact">(
     "comfortable"
   );
+  const [healthFilter, setHealthFilter] = useState<string>("all");
+
+  // Compute health level for a campaign — mirrors the HealthDot logic.
+  const healthLevel = (c: CampaignListRow): "idle" | "weak" | "low" | "active" | "healthy" => {
+    if (c.status === "draft" || c.status === "scheduled") return "idle";
+    const r = c.counts.responses;
+    const t = c.minimumReportingThreshold;
+    if (r >= t * 3) return "healthy";
+    if (r >= t * 2) return "active";
+    if (r >= t) return "low";
+    return "weak";
+  };
+
+  const filteredCampaigns =
+    healthFilter === "all"
+      ? campaigns
+      : campaigns.filter((c) => healthLevel(c) === healthFilter);
 
   const invalidateAll = () =>
     qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
@@ -289,6 +306,42 @@ export function CampaignsListView() {
         }
       />
 
+      {/* Health filter bar — only shown when there are campaigns */}
+      {!isLoading && !isError && campaigns.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 no-print">
+          <span className="text-xs text-muted-foreground">تصفية حسب الصحة:</span>
+          <div className="flex items-center rounded-lg border border-border bg-card p-0.5">
+            {[
+              { value: "all", label: "الكل", dot: "bg-slate-400" },
+              { value: "healthy", label: "قوية", dot: "bg-emerald-500" },
+              { value: "active", label: "جيدة", dot: "bg-sky-500" },
+              { value: "low", label: "ضمن الحد", dot: "bg-amber-500" },
+              { value: "weak", label: "أقل من الحد", dot: "bg-rose-500" },
+              { value: "idle", label: "لم تُفعَّل", dot: "bg-slate-400" },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setHealthFilter(opt.value)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                  healthFilter === opt.value
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${opt.dot}`} />
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {healthFilter !== "all" && (
+            <span className="text-xs text-muted-foreground">
+              ({filteredCampaigns.length} من {campaigns.length})
+            </span>
+          )}
+        </div>
+      )}
+
       {isError ? (
         <Alert variant="destructive">
           <AlertTitle>تعذّر تحميل الحملات</AlertTitle>
@@ -337,16 +390,26 @@ export function CampaignsListView() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {campaigns.map((c) => {
-                  const busy = lifecycleMutation.isPending;
-                  return (
-                    <TableRow
-                      key={c.id}
-                      className={
-                        density === "compact"
-                          ? "py-1 [&>td]:py-1.5 [&>td]:text-xs"
-                          : "py-2 [&>td]:py-3"
-                      }
+                {filteredCampaigns.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={9}
+                      className="text-center text-sm text-muted-foreground py-12"
+                    >
+                      لا توجد حملات مطابقة لعامل التصفية الحالي.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredCampaigns.map((c) => {
+                    const busy = lifecycleMutation.isPending;
+                    return (
+                      <TableRow
+                        key={c.id}
+                        className={
+                          density === "compact"
+                            ? "py-1 [&>td]:py-1.5 [&>td]:text-xs"
+                            : "py-2 [&>td]:py-3"
+                        }
                     >
                       <TableCell>
                         <button
@@ -526,7 +589,8 @@ export function CampaignsListView() {
                       </TableCell>
                     </TableRow>
                   );
-                })}
+                })
+                )}
               </TableBody>
             </Table>
           </div>
