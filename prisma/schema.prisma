@@ -1,0 +1,263 @@
+// Almarshad Holding — Anonymous Arabic Employee Survey & Executive Evaluation Platform
+// Adapted from the Cloudflare D1 spec to Prisma + SQLite.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// CAMPAIGNS — 5-state lifecycle: draft → scheduled → active → closed → archived
+// ============================================================
+model Campaign {
+  id                                  String                   @id @default(cuid())
+  titleAr                             String
+  descriptionAr                       String?
+  instructionsAr                      String?
+  status                              String                   @default("draft") // draft|scheduled|active|closed|archived
+  startsAt                            DateTime?
+  endsAt                              DateTime?
+  timezone                            String                   @default("Asia/Riyadh")
+  minimumReportingThreshold           Int                      @default(5)
+  enableEnvironmentSurvey             Boolean                  @default(true)
+  enableFutureSurvey                  Boolean                  @default(true)
+  allowMultipleExecutiveEvaluations   Boolean                  @default(true)
+  minExecutives                       Int?
+  maxExecutives                       Int?
+  allowResume                         Boolean                  @default(true)
+  privacyNoticeAr                     String?
+  activatedAt                         DateTime?
+  closedAt                            DateTime?
+  createdBy                           String?
+  createdAt                           DateTime                 @default(now())
+  updatedAt                           DateTime                 @updatedAt
+
+  executives             CampaignExecutive[]
+  questionConfig        CampaignQuestionConfig[]
+  questionSnapshots     CampaignQuestionSnapshot[]
+  participationLedger   ParticipationLedger[]
+  responses             Response[]
+
+  @@index([status])
+}
+
+// ============================================================
+// EXECUTIVES — global registry, assignable per campaign
+// ============================================================
+model Executive {
+  id            String                @id @default(cuid())
+  nameAr        String
+  titleAr       String
+  category      String                // ceo|executive|manager|department_head
+  departmentAr  String?
+  displayOrder  Int                   @default(0)
+  isActive      Boolean               @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  campaigns     CampaignExecutive[]
+
+  @@index([isActive])
+}
+
+model CampaignExecutive {
+  campaignId    String
+  executiveId   String
+  displayOrder  Int      @default(0)
+  isEnabled     Boolean @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  campaign   Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  executive  Executive  @relation(fields: [executiveId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, executiveId])
+}
+
+// ============================================================
+// QUESTION LIBRARY — reusable; admin selects subset per campaign
+// ============================================================
+model Question {
+  id              String           @id @default(cuid())
+  code            String           @unique
+  questionAr      String
+  questionType    String           // scale|yes_no|single_choice|multi_choice
+  section         String           // environment|leadership|future
+  dimension       String?          // behavioral dimension (e.g. respect, fairness)
+  isRequired      Boolean          @default(true)
+  displayOrder    Int              @default(0)
+  maxSelections   Int?
+  version         Int              @default(1)
+  parentQuestionId String?
+  isCurrent       Boolean          @default(true)
+  isActive        Boolean          @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  options         QuestionOption[]
+  campaignConfig  CampaignQuestionConfig[]
+
+  @@index([section])
+  @@index([isActive])
+}
+
+model QuestionOption {
+  id           String   @id @default(cuid())
+  questionId   String
+  value        String   // machine value e.g. "always", "agree_strongly"
+  labelAr      String
+  score        Float?
+  displayOrder Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// ============================================================
+// CAMPAIGN QUESTION CONFIG — per-campaign assignment, scope, required flag, order
+// ============================================================
+model CampaignQuestionConfig {
+  campaignId    String
+  questionId    String
+  scope         String   // organization|executive|both
+  isRequired    Boolean  @default(true)
+  displayOrder  Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, questionId])
+}
+
+// ============================================================
+// IMMUTABLE SNAPSHOTS — frozen at activation; responses reference these
+// ============================================================
+model CampaignQuestionSnapshot {
+  id                String   @id @default(cuid())
+  campaignId        String
+  originalQuestionId String
+  questionCode      String
+  questionAr        String
+  questionType      String
+  section           String
+  dimension         String?
+  isRequired        Boolean
+  displayOrder      Int
+  maxSelections     Int?
+  createdAt         DateTime @default(now())
+
+  options           CampaignQuestionOptionSnapshot[]
+  campaign          Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+}
+
+model CampaignQuestionOptionSnapshot {
+  id                          String   @id @default(cuid())
+  campaignQuestionSnapshotId String
+  value                       String
+  labelAr                     String
+  score                       Float?
+  displayOrder                Int
+  createdAt                   DateTime @default(now())
+
+  snapshot CampaignQuestionSnapshot @relation(fields: [campaignQuestionSnapshotId], references: [id], onDelete: Cascade)
+
+  @@index([campaignQuestionSnapshotId])
+}
+
+// ============================================================
+// PROTECTED IDENTITY / ELIGIBILITY LAYER — never joined to responses
+// employee_hmac is computed server-side via HMAC-SHA256(EMPLOYEE_HMAC_SECRET, normalized_employee_identifier)
+// ============================================================
+model ParticipationLedger {
+  id                String   @id @default(cuid())
+  campaignId        String
+  executiveId       String?
+  employeeHmac      String
+  participationType String   // environment|executive|future
+  scopeKey          String   // executive_id for executive evals; 'environment'|'future' for the others
+  status            String   @default("submitted") // started|submitted|cancelled
+  createdAt         DateTime @default(now())
+  submittedAt      DateTime?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  // Unique constraint — race-condition-safe duplicate prevention
+  @@unique([campaignId, employeeHmac, participationType, scopeKey])
+  @@index([campaignId])
+  @@index([employeeHmac])
+}
+
+// ============================================================
+// ANONYMOUS RESPONSE LAYER — NO employee identifier of any kind
+// ============================================================
+model Response {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  executiveId         String?
+  responseGroupId     String   // random; not derived from identity
+  questionSnapshotId  String
+  selectedValue       String
+  selectedScore       Float?
+  responseType         String   // environment|executive|future
+  submittedAt          DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([campaignId, responseType])
+  @@index([campaignId, executiveId])
+  @@index([responseGroupId])
+}
+
+// ============================================================
+// ADMIN USERS + AUDIT LOG
+// ============================================================
+model AdminUser {
+  id          String   @id @default(cuid())
+  externalId  String   @unique
+  displayName String?
+  email       String?
+  role        String   @default("SURVEY_ADMIN") // SUPER_ADMIN|SURVEY_ADMIN
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  adminUserId   String?
+  action        String
+  entityType    String
+  entityId      String?
+  campaignId    String?
+  metadataJson  String?  // never contains employee answers or identity
+  createdAt     DateTime @default(now())
+
+  @@index([campaignId])
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+// ============================================================
+// SYSTEM SETTINGS — key/value store for global config (privacy notice, etc.)
+// ============================================================
+model SystemSetting {
+  id         String   @id @default(cuid())
+  key        String   @unique
+  valueAr    String
+  updatedAt  DateTime @updatedAt
+}

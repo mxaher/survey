@@ -1,0 +1,771 @@
+     1→# MASTER BUILD PROMPT
+     2→## Anonymous Arabic Employee Survey & Executive Evaluation Platform — Almarshad Holding
+     3→
+     4→> **Consultant's note (read before using this prompt):** This merges two build specs that covered the same product from different angles. Where they disagreed, I picked one approach and dropped the other rather than leaving both in — a build agent fed contradictory instructions will guess, and you don't want it guessing on the privacy architecture. The main calls I made:
+     5→> - **Lifecycle:** kept the 5-state model (`draft → scheduled → active → closed → archived`) over the simpler 4-state one — it gives you a pre-launch scheduling window, which you'll want for a corporate rollout with a comms date.
+     6→> - **Privacy architecture:** kept the HMAC + immutable question-snapshot design over the plainer "participation table" design. It's more work up front but it's the difference between "looks anonymous" and "is architecturally anonymous," which matters a lot given this survey evaluates the CEO and executives.
+     7→> - **Question bank:** merged both banks into one library; the admin selects a subset per campaign rather than every question firing every time.
+     8→> - **Terminology:** standardized on "campaign" (not "survey") for a single run of this, matching the more rigorous of the two specs, since you'll run this annually and need clean historical comparisons.
+     9→> Flag any of these if you want it the other way before this goes to a build agent.
+    10→
+    11→---
+    12→
+    13→## 1. PRODUCT OBJECTIVE
+    14→
+    15→Build a production-ready, Arabic-first, fully RTL internal web application for Almarshad Holding to run recurring, anonymous employee surveys covering:
+    16→
+    17→1. Overall work environment.
+    18→2. Leadership / executive behavior.
+    19→3. Employee perception of management.
+    20→4. The kind of work environment employees want the company to build.
+    21→
+    22→Purpose: give leadership a credible, privacy-safe read on organizational health and individual leadership behavior patterns — for development, not for ranking or disciplinary use. Every design decision below should be judged against that purpose.
+    23→
+    24→This is **not** a popularity contest or a public ranking system. Use neutral, observable behavioral statements ("يتعامل المسؤول مع الموظفين باحترام ومهنية"), never accusatory or emotionally loaded ones ("هل سلوك المدير مناسب؟").
+    25→
+    26→---
+    27→
+    28→## 2. AGENT OPERATING RULES
+    29→
+    30→Before writing any code:
+    31→
+    32→1. Inspect the entire existing repository — framework, routing, database layer, auth, styling, deployment config.
+    33→2. Reuse existing architecture wherever practical; do not replace the framework without a strong technical reason.
+    34→3. If the project is already Next.js/React, extend it rather than rebuilding it.
+    35→4. Avoid unnecessary dependencies. Prefer native Cloudflare D1 SQL or Drizzle ORM.
+    36→5. Do not use Node-only APIs anywhere that runs in the Workers runtime.
+    37→6. Do not use Firebase, Supabase, Postgres, MySQL, or any external database — D1 only.
+    38→7. Do not use filesystem-based persistence.
+    39→8. Parameterized SQL only — never string-concatenated queries.
+    40→9. Validate all input server-side; never trust frontend validation as a security control.
+    41→10. Never expose secrets or internal database details to the browser.
+    42→11. Never log survey answers or employee identity (see §5).
+    43→12. Create proper D1 migration files, plus local dev seed data.
+    44→13. Add automated tests for privacy, authorization, campaign locking, and duplicate prevention (see §17).
+    45→14. Run type-checking, linting, tests, build, and migration checks before declaring the work complete.
+    46→15. **Do not claim the survey is anonymous unless the implemented architecture actually supports the exact privacy statement shown to employees.** If underlying infrastructure (identity provider logs, Cloudflare access logs) retains data outside the app's control, say so in the README as "de-identified" rather than claiming absolute anonymity.
+    47→16. Document all assumptions and remaining limitations in the final report (§20).
+    48→17. Do not ask unnecessary clarifying questions — make reasonable implementation decisions and document them instead.
+    49→
+    50→---
+    51→
+    52→## 3. TECHNOLOGY & CLOUDFLARE REQUIREMENTS
+    53→
+    54→- **Runtime:** Cloudflare Workers.
+    55→- **Database:** Cloudflare D1 (SQLite), as the sole primary database.
+    56→- **Auth provider:** Cloudflare Access, Microsoft Entra ID, or existing company SSO — whichever the existing repo already uses; keep it modular via an `EmployeeIdentityProvider` interface (§6) so the provider can be swapped later.
+    57→- **File storage:** Cloudflare R2, only if file storage becomes necessary (not expected for v1).
+    58→- **Crypto:** Web Crypto APIs (HMAC-SHA256) — Workers-compatible, no Node `crypto`.
+    59→- **Timezone:** `Asia/Riyadh`. Store all timestamps in UTC; display in Riyadh time.
+    60→
+    61→```ts
+    62→interface Env {
+    63→  DB: D1Database;
+    64→  ENVIRONMENT: "development" | "preview" | "production";
+    65→  EMPLOYEE_HMAC_SECRET: string;
+    66→  SESSION_SECRET: string;
+    67→  ADMIN_AUTH_SECRET?: string;
+    68→}
+    69→```
+    70→
+    71→Never commit secret values. Required deliverables: `wrangler.toml`/`wrangler.jsonc`, D1 binding config, environment variable setup for local/preview/production, migration scripts, seed scripts, deployment scripts.
+    72→
+    73→---
+    74→
+    75→## 4. LANGUAGE & UI
+    76→
+    77→- Default and only employee-facing language: Arabic. `dir="rtl"` throughout.
+    78→- All validation errors, confirmations, and system messages in professional Modern Standard Arabic.
+    79→- Font: Tajawal, IBM Plex Sans Arabic, or Noto Kufi Arabic.
+    80→- Responsive: desktop, tablet, mobile. Large touch targets, keyboard navigation, screen-reader labels, visible focus states, adequate contrast, never color-only status indicators.
+    81→- Visual identity: professional corporate — dark navy/charcoal, neutral gray, restrained gold accent. Avoid excessive animation.
+    82→
+    83→**Application title:** "استبيان بيئة العمل والقيادة المؤسسية"
+    84→
+    85→**Employee introduction copy:**
+    86→> "يهدف هذا الاستبيان إلى فهم مستوى بيئة العمل والقيادة داخل المؤسسة، وتحديد الجوانب التي تحتاج إلى تطوير. لن يتم طلب اسمك أو بريدك الإلكتروني ضمن إجابات الاستبيان، وستُعرض النتائج بصورة إجمالية لأغراض التحسين المؤسسي."
+    87→
+    88→**Privacy statement (use only if the shipped architecture actually supports it — see rule 15 in §2):**
+    89→> "إجابات الاستبيان غير مرتبطة بهوية الموظف داخل قاعدة بيانات النتائج، مع استخدام آلية منفصلة لمنع تكرار التقييم."
+    90→
+    91→**Standard system messages:**
+    92→
+    93→| Situation | Arabic message |
+    94→|---|---|
+    95→| Duplicate campaign participation | "تم تسجيل مشاركتك في هذا الاستبيان مسبقًا." |
+    96→| Duplicate executive evaluation | "تم تسجيل تقييمك لهذا المسؤول مسبقًا، ولا يمكن إرسال تقييم آخر له ضمن هذه الحملة." |
+    97→| Campaign closed | "انتهت فترة المشاركة في هذا الاستبيان." |
+    98→| No active campaign | "لا يوجد حالياً استبيان نشط للمشاركة." |
+    99→| Incomplete required answers | "يرجى استكمال جميع الأسئلة المطلوبة قبل إرسال الاستبيان." |
+   100→| Unauthorized access | "لا تملك صلاحية الوصول إلى هذا الاستبيان." |
+   101→| Cannot publish — config incomplete | "لا يمكن نشر الاستبيان قبل استكمال الإعدادات المطلوبة." |
+   102→| Submission success | "تم تسجيل تقييمك بنجاح. شكراً لمساهمتك في تحسين بيئة العمل." |
+   103→| Cannot structurally edit active campaign | "لا يمكن تعديل هيكل الاستبيان بعد بدء المشاركة حفاظاً على سلامة النتائج." |
+   104→| Below reporting threshold | "لا تتوفر بيانات كافية لعرض النتائج حالياً حفاظاً على سرية المشاركين." |
+   105→
+   106→---
+   107→
+   108→## 5. PRIVACY & ANONYMITY ARCHITECTURE — THE MOST IMPORTANT SECTION
+   109→
+   110→**Core principle:** *Employee identity is used only to establish eligibility and prevent duplicate participation. Survey answers are stored and analyzed completely separately from identity.* This must not merely look anonymous in the UI — the database and API layer must enforce it so that the normal admin workflow cannot ever connect an employee to their answers.
+   111→
+   112→### 5.1 What must never appear together
+   113→Survey response tables (`responses`, environment answers, executive evaluations) must **never** contain: employee name, employee number/code, corporate email, authentication provider ID, phone number, employee HMAC, IP address, user-agent, or device fingerprint. Never put any employee identifier in URLs, query strings, response payloads, `localStorage`, analytics events, or response IDs.
+   114→
+   115→### 5.2 Two separated layers
+   116→
+   117→**A. Eligibility / participation layer** (`participation_ledger`) — knows:
+   118→- Is this person an authorized, active employee?
+   119→- Have they already participated in this campaign?
+   120→- Which executives have they already evaluated?
+   121→
+   122→**B. Response layer** (`responses`) — knows only:
+   123→- Which campaign, which executive (if applicable), which question snapshot, which selected value/score, when.
+   124→- Linked only via a random, unlinkable `response_group_id` generated at submission time — **not** derived from employee identity.
+   125→
+   126→### 5.3 The identity token
+   127→
+   128→Never store a raw employee identifier, a sequential number, or a plain unsalted hash next to responses. Compute a keyed hash server-side:
+   129→
+   130→```
+   131→employee_hmac = HMAC_SHA256(EMPLOYEE_HMAC_SECRET, normalized_employee_identifier)
+   132→```
+   133→
+   134→- `EMPLOYEE_HMAC_SECRET` lives only in Worker secrets; it never reaches the browser or any response record.
+   135→- `employee_hmac` is used **only** inside `participation_ledger` to enforce one-participation-per-employee and one-evaluation-per-executive-per-employee. It is never joined to, or stored alongside, `responses`.
+   136→- Enforce uniqueness with a real database constraint, not application logic alone:
+   137→
+   138→```sql
+   139→CREATE UNIQUE INDEX idx_participation_unique
+   140→ON participation_ledger (campaign_id, employee_hmac, participation_type, scope_key);
+   141→```
+   142→
+   143→Where `scope_key` is the executive ID for executive evaluations, or a fixed literal (`'environment'`, `'future'`) for the other two sections.
+   144→
+   145→### 5.4 Immutable question snapshots
+   146→
+   147→At campaign activation, freeze a snapshot of every assigned question and its options into `campaign_question_snapshots` / `campaign_question_option_snapshots`. Responses reference the **snapshot**, never the live, editable question. This is what makes historical results trustworthy even if the reusable question library changes later.
+   148→
+   149→### 5.5 What this buys you
+   150→- Duplicate prevention works even against page refresh, multiple tabs, another browser, direct API calls, or two simultaneous requests (race-condition-safe via the unique index).
+   151→- No query an admin can write against the reporting tables can recover who said what.
+   152→- If your identity provider or Cloudflare itself retains logs outside this application's database, the README must say so explicitly and describe the system as **de-identified**, not "100% anonymous" — don't let the UI overclaim what the architecture delivers.
+   153→
+   154→---
+   155→
+   156→## 6. AUTHENTICATION & EMPLOYEE VERIFICATION
+   157→
+   158→```ts
+   159→interface EmployeeIdentityProvider {
+   160→  getVerifiedEmployee(request: Request, env: Env): Promise<VerifiedEmployee | null>;
+   161→}
+   162→
+   163→type VerifiedEmployee = {
+   164→  externalId: string;
+   165→  role?: string;
+   166→  department?: string;
+   167→  isActive: boolean;
+   168→};
+   169→```
+   170→
+   171→Preferred providers, in order: Cloudflare Access → Microsoft Entra ID → existing company SSO → another trusted provider. The verified identifier is used server-side **only** to compute `employee_hmac` — never persisted in plaintext anywhere near responses.
+   172→
+   173→**Local development mode:** only active when `ENVIRONMENT !== "production"`, must be visibly labeled as dev mode in the UI, must require an explicit flag to enable, and must never expose real production identity data.
+   174→
+   175→**Admin authentication:** prefer Cloudflare Access / Entra ID / existing SSO. If a temporary password scheme is unavoidable, store only a salted hash (never plaintext), use secure HTTP-only/SameSite session cookies, rate-limit login, expire sessions, support logout, and never ship one shared hardcoded password. Keep it structured so migrating to SSO later is a drop-in change. Employee and admin auth paths must be fully separate — employees can never reach `/admin/*` routes or admin APIs.
+   176→
+   177→---
+   178→
+   179→## 7. CAMPAIGN LIFECYCLE
+   180→
+   181→Five states: **draft → scheduled → active → closed → archived**.
+   182→
+   183→| State | Admin can do | Employee can do |
+   184→|---|---|---|
+   185→| **Draft** | Everything — add/edit/delete/reorder questions, sections, executives; assign questions to campaign; configure dates, thresholds, rules; preview | Nothing (not visible) |
+   186→| **Scheduled** | Edit dates (if not yet started), description, assigned questions/executives; return to draft; cancel | Nothing yet |
+   187→| **Active** | View/export reports; close campaign; safely deactivate unused items that don't affect historical data. **Blocked:** deleting questions/executives with responses, changing question wording/type/options that have responses, any structural change that would invalidate historical answers | Participate once; evaluate any number of distinct executives, each once; save/resume if enabled |
+   188→| **Closed** | View/export reports (read-only config) | Nothing new; sees "campaign ended" message |
+   189→| **Archived** | Fully read-only; excluded from active-campaign selection | N/A |
+   190→
+   191→On activation: create immutable question/option snapshots (§5.4), record an audit log entry, store `activated_at`, and lock all structurally unsafe edit paths server-side (never rely on the UI hiding a button).
+   192→
+   193→Confirmation copy before activation:
+   194→> "أنت على وشك فتح الاستبيان أمام الموظفين. بعد بدء المشاركة لن تتمكن من حذف الأسئلة أو تعديل بنيتها أو إزالة المسؤولين الذين لديهم إجابات. هل تريد المتابعة؟"
+   195→> Buttons: **فتح الحملة** / **إلغاء**
+   196→
+   197→The architecture must support running this every year (2026, 2027, 2028…) with each campaign keeping its own independent questions, sections, executives, and configuration, and historical campaigns remaining immutable once closed.
+   198→
+   199→---
+   200→
+   201→## 8. EMPLOYEE EXPERIENCE
+   202→
+   203→### 8.1 Flow
+   204→1. Employee opens the active campaign; identity is verified server-side.
+   205→2. Sees campaign title, instructions, and the privacy notice.
+   206→3. Completes the **general work-environment** section once (if enabled for this campaign).
+   207→4. Sees the executive-selection dropdown: **"اختر المسؤول الذي ترغب في تقييمه"** — populated only with active executives assigned to this campaign, database-driven, never hard-coded.
+   208→5. Already-evaluated executives appear disabled/labeled **"تم التقييم مسبقًا"** and move into a **"المديرون الذين تم تقييمهم"** list; the employee picks from the remaining ones.
+   209→6. Answers the standardized executive-evaluation questions for the selected executive.
+   210→7. Saves that evaluation → executive drops out of the available list → employee may pick another, repeating steps 5–6 for as many executives as they want to evaluate (no forced single-executive limit unless an admin explicitly configures one via `allow_multiple_executive_evaluations`).
+   211→8. Completes the **future work-environment** section once (if enabled).
+   212→9. Review screen: completion status, number of executives evaluated, names of executives evaluated, and:
+   213→   > "بعد إرسال الاستبيان لن تتمكن من إرسال مشاركة أخرى لهذا الاستبيان."
+   214→   Checkbox: "أؤكد أن إجاباتي تعكس رأيي المهني وتجربتي في بيئة العمل." Button: **إرسال الاستبيان**.
+   215→10. Server re-validates campaign status, executive eligibility, question assignment, and all answer values before accepting.
+   216→11. Success page: **"تم تسجيل مشاركتك بنجاح"** — "شكرًا لمشاركتك. تم تسجيل إجاباتك بنجاح." No identity or internal token shown.
+   217→
+   218→The employee is never limited to evaluating only one executive overall unless the admin has explicitly turned that policy on for the campaign.
+   219→
+   220→### 8.2 Progress indicator
+   221→Show a step indicator across the four sections: 1) بيئة العمل · 2) تقييم القيادات · 3) البيئة المستقبلية · 4) المراجعة والإرسال.
+   222→
+   223→### 8.3 No free text, anywhere
+   224→No `<textarea>`, no comment box, no "other — specify," no written complaint. Every employee answer is one of a predefined, database-stored set of options. This is a hard constraint for v1, not a preference.
+   225→
+   226→---
+   227→
+   228→## 9. QUESTION TYPES & SCORING
+   229→
+   230→Supported types: `scale`, `yes_no`, `single_choice`, `multi_choice`. No free text.
+   231→
+   232→**Primary 5(+1)-point scale**, machine values in parentheses, score in brackets:
+   233→دائماً (always) [5] · غالباً (often) [4] · أحياناً (sometimes) [3] · نادراً (rarely) [2] · أبداً (never) [1] · لا ينطبق / لا أملك معلومات كافية (not_applicable) [excluded from average]
+   234→
+   235→**Alternate agreement scale** (for environment questions): أوافق بشدة [5] · أوافق [4] · محايد [3] · لا أوافق [2] · لا أوافق بشدة [1]
+   236→
+   237→**Yes/no:** نعم · لا · لا ينطبق (excluded from average)
+   238→
+   239→For `multi_choice`: admin defines `max_selections`; validate it server-side; reject any option value not present in the question's stored option set.
+   240→
+   241→Keep the scoring configuration (value → score mapping) database-driven rather than hard-coded, so future question types or scales don't require a code change.
+   242→
+   243→---
+   244→
+   245→## 10. QUESTION BANK (SEED CONTENT)
+   246→
+   247→Seed a reusable **question library** — the admin selects a subset per campaign; not every seeded question needs to run in every campaign. Recommended first-campaign configuration: 20–24 leadership questions per executive, ~10 environment questions, ~4 future-environment questions, targeting 10–15 minutes of completion time per executive evaluated.
+   248→
+   249→### 10.1 Executive evaluation questions (library, admin selects subset)
+   250→
+   251→**الاحترام والمهنية**
+   252→1. يتعامل المسؤول مع الموظفين باحترام ومهنية.
+   253→2. يحافظ المسؤول على كرامة الموظفين عند مناقشة الأخطاء أو الملاحظات.
+   254→3. يتجنب المسؤول الأساليب التي قد تسبب الإحراج أو التخويف أو التقليل من شأن الموظف.
+   255→
+   256→**العدالة والاتساق**
+   257→4. يطبق المسؤول السياسات والإجراءات بعدالة واتساق.
+   258→5. يتعامل المسؤول مع الحالات المتشابهة بطريقة متقاربة.
+   259→6. يتخذ المسؤول قراراته بناءً على معايير واضحة ومهنية.
+   260→7. لا يميز المسؤول بين الموظفين دون مبرر مهني واضح.
+   261→
+   262→**التواصل**
+   263→8. يوضح المسؤول الأولويات والتوقعات المطلوبة من الموظفين.
+   264→9. يشارك المسؤول المعلومات المهمة في الوقت المناسب.
+   265→10. يشرح المسؤول أسباب القرارات التي تؤثر على العمل عند الحاجة.
+   266→11. يستخدم المسؤول أسلوباً واضحاً ومهنياً في التواصل.
+   267→
+   268→**الاستماع والأمان النفسي**
+   269→12. يستمع المسؤول إلى آراء الموظفين وملاحظاتهم.
+   270→13. يستطيع الموظف طرح رأي مهني مختلف دون الخوف من الانتقام.
+   271→14. يتعامل المسؤول مع الملاحظات بطريقة بناءة.
+   272→15. يشجع المسؤول الموظفين على الإبلاغ عن المشكلات مبكراً.
+   273→
+   274→**التمكين والتفويض**
+   275→16. يمنح المسؤول الموظفين الصلاحيات المناسبة لإنجاز أعمالهم.
+   276→17. يثق المسؤول بالموظفين عند تفويض المهام.
+   277→18. يتجنب المسؤول التدخل غير الضروري في التفاصيل التشغيلية.
+   278→19. يوفر المسؤول التوجيه عند الحاجة دون إلغاء استقلالية الموظف.
+   279→
+   280→**إدارة الأداء**
+   281→20. يوضح المسؤول معايير قياس الأداء.
+   282→21. يقدم المسؤول ملاحظات مفيدة وفي الوقت المناسب.
+   283→22. يتعامل المسؤول مع ضعف الأداء بطريقة مهنية ومتدرجة.
+   284→23. يطبق المساءلة على الجميع بعدالة.
+   285→24. يميز المسؤول بين الأخطاء غير المقصودة وسلوك الإهمال المتكرر.
+   286→
+   287→**التطوير والتقدير**
+   288→25. يشجع المسؤول على التعلم والتطوير.
+   289→26. يساعد المسؤول الموظفين على فهم فرص النمو المهني.
+   290→27. يقدر المسؤول الإنجازات والجهود بصورة مناسبة.
+   291→28. يوجه المسؤول الموظفين لتحسين أدائهم بدلاً من الاكتفاء بالنقد.
+   292→
+   293→**التعاون**
+   294→29. يشجع المسؤول التعاون بين أعضاء الفريق.
+   295→30. يتعاون المسؤول مع الإدارات الأخرى لتحقيق أهداف المؤسسة.
+   296→31. يتعامل المسؤول مع الخلافات بطريقة مهنية.
+   297→32. يساعد المسؤول على إزالة العوائق التي تؤثر على أداء الفريق.
+   298→
+   299→**القيادة بالقدوة**
+   300→33. يلتزم المسؤول بالسلوكيات والقواعد التي يتوقعها من الموظفين.
+   301→34. يتحمل المسؤول مسؤولية قراراته ونتائجها.
+   302→35. يتصرف المسؤول بهدوء ومهنية في أوقات الضغط.
+   303→36. يوازن المسؤول بين تحقيق النتائج والمحافظة على بيئة عمل صحية.
+   304→
+   305→Answer scale: دائماً / غالباً / أحياناً / نادراً / أبداً / لا ينطبق.
+   306→
+   307→### 10.2 General work-environment questions (~10, all dimensions covered)
+   308→1. أشعر أن بيئة العمل تحترم الموظفين وتحافظ على كرامتهم.
+   309→2. أستطيع التعبير عن رأيي المهني بأمان.
+   310→3. يتم التعامل مع الموظفين بعدالة.
+   311→4. تصل المعلومات المهمة إلى الموظفين بوضوح وفي الوقت المناسب.
+   312→5. يوجد تعاون فعال بين الإدارات.
+   313→6. يتم التعامل مع الأخطاء بهدف التعلم والتحسين.
+   314→7. يتم تقدير الجهود والإنجازات بصورة عادلة.
+   315→8. يتم التعامل مع المشكلات والشكاوى بجدية.
+   316→9. أعرف بوضوح ما هو متوقع مني في وظيفتي.
+   317→10. أشعر أن بيئة العمل تساعدني على تقديم أفضل أداء.
+   318→
+   319→Answer scale: أوافق بشدة / أوافق / محايد / لا أوافق / لا أوافق بشدة.
+   320→
+   321→### 10.3 Future-environment questions (multi-select, max 3 where noted, no free text)
+   322→
+   323→**س1 — أهم ثلاثة جوانب يجب تحسينها خلال الفترة القادمة (اختر حتى 3):**
+   324→وضوح القرارات والتواصل الداخلي · العدالة وتطبيق السياسات · تقدير الموظفين والاعتراف بجهودهم · فرص التطور والترقي · التعاون بين الإدارات · أسلوب القيادة والإدارة · توزيع الأعباء وضغط العمل · سرعة معالجة المشكلات · التدريب وبناء القدرات · وضوح الأدوار والمسؤوليات · الأنظمة والتقنية · الحوافز والمزايا
+   325→
+   326→**س2 — كيف تصف بيئة العمل التي ترغب في أن نصل إليها (اختر حتى 3):**
+   327→بيئة عادلة ومنظمة · بيئة تعاونية · بيئة مبتكرة · بيئة تركز على النتائج · بيئة تهتم بتطوير الموظفين · بيئة تتسم بالشفافية · بيئة آمنة للتعبير عن الرأي · بيئة سريعة في اتخاذ القرار · بيئة توازن بين الأداء ورفاه الموظف
+   328→
+   329→**س3 — ما السلوك الإداري الأكثر أهمية بالنسبة لك (اختر واحدًا):**
+   330→الاحترام · الوضوح · العدالة · الاستماع · التمكين · الحزم المهني · التقدير · التطوير · سرعة الاستجابة · تحمل المسؤولية
+   331→
+   332→**س4 — ما أهم نتيجة تتوقعها من هذا الاستبيان (اختر واحدًا):**
+   333→تحسين أسلوب القيادة · تحسين التواصل الداخلي · رفع مستوى العدالة والشفافية · تحسين التعاون بين الإدارات · زيادة تقدير الموظفين · تطوير التدريب والمسار المهني · تحسين توزيع الأعباء · معالجة المشكلات المتكررة
+   334→
+   335→Do not automatically load the full library into every campaign — the admin selects which questions run.
+   336→
+   337→---
+   338→
+   339→## 11. ADMIN CONTROL PANEL
+   340→
+   341→Protected route: `/admin`. Navigation:
+   342→
+   343→لوحة التحكم · الحملات · الأسئلة · المسؤولون والمديرون · إعدادات الحملة · معاينة الاستبيان · فحص الجاهزية · النتائج / التقارير · سجل العمليات · إعدادات النظام
+   344→
+   345→Must let a non-technical administrator configure the entire survey — sections, questions, executives, scales, thresholds, publish/close/archive — without touching code or the database.
+   346→
+   347→### 11.1 Campaign management (`/admin/campaigns`)
+   348→List columns: اسم الحملة، الحالة، تاريخ البداية، تاريخ النهاية، عدد المسؤولين، عدد الأسئلة، عدد المشاركات، تاريخ آخر تعديل.
+   349→Actions: إنشاء حملة · تعديل · فتح · إغلاق · أرشفة · نسخ · معاينة · حذف المسودة (draft-only, no participation/response records).
+   350→
+   351→Creation fields: عنوان الحملة بالعربية، الوصف، تعليمات الموظفين، تاريخ ووقت البداية/النهاية، الحد الأدنى لعرض النتائج (default 5), تفعيل استبيان بيئة العمل العامة (toggle), تفعيل أسئلة التوجه المستقبلي (toggle), السماح بتقييم أكثر من مسؤول (toggle), الحد الأدنى/الأقصى لعدد المديرين المطلوب تقييمهم, المنطقة الزمنية, هل يمكن الحفظ والاستكمال لاحقًا (toggle).
+   352→
+   353→Delete only permitted when: status = draft AND no participation/response records exist; otherwise archive instead.
+   354→
+   355→### 11.2 Question library (`/admin/questions`)
+   356→Reusable library, independent of any one campaign. Columns: نص السؤال، نوع السؤال، القسم، الحالة، إلزامي؟، عدد الحملات المستخدمة فيها، آخر تعديل، الترتيب. Actions: إضافة · تعديل · حذف · تفعيل/تعطيل · إعادة ترتيب (drag-and-drop, persisted to D1) · بحث · تصفية.
+   357→
+   358→New-question fields: النص بالعربية، رمز داخلي فريد، النوع، القسم، إلزامي؟، خيارات الإجابة + قيمة الدرجة لكل خيار، الترتيب، الحالة.
+   359→
+   360→**Edit/delete rules:**
+   361→- Before any use in a campaign with responses: freely edit text, options, scores, type, section, required flag, order; hard-delete allowed.
+   362→- Once responses exist against it (via a snapshot): never overwrite historical text/options/scores. Editing the live question is fine — it only affects future campaigns via a new snapshot at their activation; historical snapshots are untouched. Only soft-delete (`is_active = 0`, `deleted_at`) is allowed once a question has ever been assigned to a campaign with responses.
+   363→- Message: "لا يمكن حذف هذا السؤال نهائياً لأنه مرتبط بحملة أو بنتائج سابقة. يمكنك تعطيله بدلاً من ذلك."
+   364→
+   365→### 11.3 Campaign question assignment (`/admin/campaigns/:id/questions`)
+   366→Browse/search the library, assign selected questions to this draft/scheduled campaign, set `scope` (`organization` / `executive` / `both`), mark required per-campaign, reorder, preview final order. This assignment step never mutates the shared library.
+   367→
+   368→### 11.4 Executive & manager management (`/admin/executives`, labeled "المسؤولون والمديرون")
+   369→Global registry, fields: name_ar، title_ar، category (الرئيس التنفيذي / مسؤول تنفيذي / مدير / رئيس قسم)، department_ar، display_order، is_active. No unnecessary personal data (no national ID, personal phone/email, home address).
+   370→Actions: إضافة · تعديل · حذف (only if unused) · تفعيل/تعطيل · تعيين لحملة · إزالة من حملة مسودة · إعادة ترتيب · معاينة القائمة المنسدلة.
+   371→
+   372→### 11.5 Campaign–executive assignment (`/admin/campaigns/:id/executives`)
+   373→Two-column UI: **متاحون** (not yet assigned → "إضافة إلى الحملة") and **معيّنون** (assigned → "إزالة من الحملة", reorder, activate/deactivate). Draft campaigns: freely add/remove (removal never deletes the global executive record). Active campaign, executive has no responses yet: deactivation allowed with confirmation. Active campaign, executive has historical responses: never delete; deactivate for future selection only, preserve all historical reports. Message: "لا يمكن حذف هذا المسؤول من السجلات التاريخية. سيتم إيقاف ظهوره للمشاركين مع الحفاظ على نتائجه السابقة."
+   374→
+   375→### 11.6 Preview (`/admin/campaigns/:id/preview`)
+   376→Exact employee experience — intro, privacy notice, environment section, executive dropdown, executive questions, review, mobile + desktop views. Must **never** write real participation or response records. Visible banner: "وضع المعاينة — لن يتم حفظ أي إجابات."
+   377→
+   378→### 11.7 Readiness check (`/admin/campaigns/:id/readiness`)
+   379→Validates before activation: title & instructions present · ≥1 active assigned executive · ≥1 active assigned question · every assigned question has valid options · required-question validity · start date valid, end date after start · reporting threshold valid · privacy notice present · no duplicate executives/questions · no duplicate ordering · min executives ≤ max executives. Output: **"جاهز للنشر"** or **"لا يمكن فتح الحملة قبل معالجة العناصر التالية:"** with the exact list of issues. Activation is blocked until all critical issues are resolved.
+   380→
+   381→---
+   382→
+   383→## 12. DATABASE SCHEMA (Cloudflare D1)
+   384→
+   385→Use cryptographically secure random IDs (UUIDs). Every table gets `created_at`/`updated_at`; soft-deletable tables get `is_active` and `deleted_at`.
+   386→
+   387→```sql
+   388→CREATE TABLE campaigns (
+   389→  id TEXT PRIMARY KEY,
+   390→  title_ar TEXT NOT NULL,
+   391→  description_ar TEXT,
+   392→  instructions_ar TEXT,
+   393→  status TEXT NOT NULL CHECK (status IN ('draft','scheduled','active','closed','archived')),
+   394→  starts_at TEXT,
+   395→  ends_at TEXT,
+   396→  timezone TEXT NOT NULL DEFAULT 'Asia/Riyadh',
+   397→  minimum_reporting_threshold INTEGER NOT NULL DEFAULT 5,
+   398→  enable_environment_survey INTEGER NOT NULL DEFAULT 1,
+   399→  enable_future_survey INTEGER NOT NULL DEFAULT 1,
+   400→  allow_multiple_executive_evaluations INTEGER NOT NULL DEFAULT 1,
+   401→  min_executives INTEGER,
+   402→  max_executives INTEGER,
+   403→  allow_resume INTEGER NOT NULL DEFAULT 1,
+   404→  activated_at TEXT,
+   405→  closed_at TEXT,
+   406→  created_by TEXT,
+   407→  created_at TEXT NOT NULL,
+   408→  updated_at TEXT NOT NULL
+   409→);
+   410→
+   411→CREATE TABLE executives (
+   412→  id TEXT PRIMARY KEY,
+   413→  name_ar TEXT NOT NULL,
+   414→  title_ar TEXT NOT NULL,
+   415→  category TEXT NOT NULL CHECK (category IN ('ceo','executive','manager','department_head')),
+   416→  department_ar TEXT,
+   417→  display_order INTEGER NOT NULL DEFAULT 0,
+   418→  is_active INTEGER NOT NULL DEFAULT 1,
+   419→  deleted_at TEXT,
+   420→  created_at TEXT NOT NULL,
+   421→  updated_at TEXT NOT NULL
+   422→);
+   423→
+   424→CREATE TABLE campaign_executives (
+   425→  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+   426→  executive_id TEXT NOT NULL REFERENCES executives(id),
+   427→  display_order INTEGER NOT NULL DEFAULT 0,
+   428→  is_enabled INTEGER NOT NULL DEFAULT 1,
+   429→  created_at TEXT NOT NULL,
+   430→  updated_at TEXT NOT NULL,
+   431→  PRIMARY KEY (campaign_id, executive_id)
+   432→);
+   433→
+   434→CREATE TABLE questions (
+   435→  id TEXT PRIMARY KEY,
+   436→  code TEXT NOT NULL UNIQUE,
+   437→  question_ar TEXT NOT NULL,
+   438→  question_type TEXT NOT NULL CHECK (question_type IN ('scale','yes_no','single_choice','multi_choice')),
+   439→  section TEXT NOT NULL CHECK (section IN ('environment','leadership','future')),
+   440→  is_required INTEGER NOT NULL DEFAULT 1,
+   441→  display_order INTEGER NOT NULL DEFAULT 0,
+   442→  max_selections INTEGER,
+   443→  version INTEGER NOT NULL DEFAULT 1,
+   444→  parent_question_id TEXT,
+   445→  is_current INTEGER NOT NULL DEFAULT 1,
+   446→  is_active INTEGER NOT NULL DEFAULT 1,
+   447→  deleted_at TEXT,
+   448→  created_at TEXT NOT NULL,
+   449→  updated_at TEXT NOT NULL
+   450→);
+   451→
+   452→CREATE TABLE question_options (
+   453→  id TEXT PRIMARY KEY,
+   454→  question_id TEXT NOT NULL REFERENCES questions(id),
+   455→  value TEXT NOT NULL,
+   456→  label_ar TEXT NOT NULL,
+   457→  score REAL,
+   458→  display_order INTEGER NOT NULL DEFAULT 0,
+   459→  is_active INTEGER NOT NULL DEFAULT 1,
+   460→  created_at TEXT NOT NULL,
+   461→  updated_at TEXT NOT NULL
+   462→);
+   463→
+   464→CREATE TABLE campaign_question_config (
+   465→  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+   466→  question_id TEXT NOT NULL REFERENCES questions(id),
+   467→  scope TEXT NOT NULL CHECK (scope IN ('organization','executive','both')),
+   468→  is_required INTEGER NOT NULL DEFAULT 1,
+   469→  display_order INTEGER NOT NULL DEFAULT 0,
+   470→  created_at TEXT NOT NULL,
+   471→  updated_at TEXT NOT NULL,
+   472→  PRIMARY KEY (campaign_id, question_id)
+   473→);
+   474→
+   475→-- Frozen at activation; responses reference these, never the live question
+   476→CREATE TABLE campaign_question_snapshots (
+   477→  id TEXT PRIMARY KEY,
+   478→  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+   479→  original_question_id TEXT NOT NULL,
+   480→  question_code TEXT NOT NULL,
+   481→  question_ar TEXT NOT NULL,
+   482→  question_type TEXT NOT NULL,
+   483→  section TEXT NOT NULL,
+   484→  is_required INTEGER NOT NULL,
+   485→  display_order INTEGER NOT NULL,
+   486→  max_selections INTEGER,
+   487→  created_at TEXT NOT NULL
+   488→);
+   489→
+   490→CREATE TABLE campaign_question_option_snapshots (
+   491→  id TEXT PRIMARY KEY,
+   492→  campaign_question_snapshot_id TEXT NOT NULL REFERENCES campaign_question_snapshots(id),
+   493→  value TEXT NOT NULL,
+   494→  label_ar TEXT NOT NULL,
+   495→  score REAL,
+   496→  display_order INTEGER NOT NULL,
+   497→  created_at TEXT NOT NULL
+   498→);
+   499→
+   500→-- PROTECTED IDENTITY / ELIGIBILITY LAYER — never joined to responses
+   501→CREATE TABLE participation_ledger (
+   502→  id TEXT PRIMARY KEY,
+   503→  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+   504→  executive_id TEXT REFERENCES executives(id),
+   505→  employee_hmac TEXT NOT NULL,
+   506→  participation_type TEXT NOT NULL CHECK (participation_type IN ('environment','executive','future')),
+   507→  scope_key TEXT NOT NULL,
+   508→  status TEXT NOT NULL CHECK (status IN ('started','submitted','cancelled')),
+   509→  created_at TEXT NOT NULL,
+   510→  submitted_at TEXT
+   511→);
+   512→CREATE UNIQUE INDEX idx_participation_unique
+   513→  ON participation_ledger (campaign_id, employee_hmac, participation_type, scope_key);
+   514→
+   515→-- ANONYMOUS RESPONSE LAYER — no employee identifier of any kind
+   516→CREATE TABLE responses (
+   517→  id TEXT PRIMARY KEY,
+   518→  campaign_id TEXT NOT NULL REFERENCES campaigns(id),
+   519→  executive_id TEXT REFERENCES executives(id),
+   520→  response_group_id TEXT NOT NULL,       -- random, generated at submission; not derived from identity
+   521→  question_snapshot_id TEXT NOT NULL REFERENCES campaign_question_snapshots(id),
+   522→  selected_value TEXT NOT NULL,
+   523→  selected_score REAL,
+   524→  response_type TEXT NOT NULL CHECK (response_type IN ('environment','executive','future')),
+   525→  submitted_at TEXT NOT NULL
+   526→);
+   527→
+   528→CREATE TABLE admin_users (
+   529→  id TEXT PRIMARY KEY,
+   530→  external_id TEXT NOT NULL UNIQUE,
+   531→  display_name TEXT,
+   532→  email TEXT,
+   533→  role TEXT NOT NULL CHECK (role IN ('SUPER_ADMIN','SURVEY_ADMIN')),
+   534→  is_active INTEGER NOT NULL DEFAULT 1,
+   535→  created_at TEXT NOT NULL,
+   536→  updated_at TEXT NOT NULL
+   537→);
+   538→
+   539→CREATE TABLE audit_logs (
+   540→  id TEXT PRIMARY KEY,
+   541→  admin_user_id TEXT,
+   542→  action TEXT NOT NULL,
+   543→  entity_type TEXT NOT NULL,
+   544→  entity_id TEXT,
+   545→  campaign_id TEXT,
+   546→  metadata_json TEXT,          -- never contains employee answers or identity
+   547→  created_at TEXT NOT NULL
+   548→);
+   549→```
+   550→
+   551→Enforce foreign keys, unique constraints, and indexes at the D1 level — never rely solely on application code for the constraints above.
+   552→
+   553→---
+   554→
+   555→## 13. ATOMIC SUBMISSION LOGIC (executive evaluation — apply the same pattern to environment/future)
+   556→
+   557→1. Verify employee authentication; reject if unverified.
+   558→2. Load the campaign; confirm status = `active`.
+   559→3. Validate the selected executive is assigned and enabled for this campaign.
+   560→4. Validate every required answer against the campaign's question snapshots and option snapshots.
+   561→5. Compute `employee_hmac` server-side.
+   562→6. Attempt to insert into `participation_ledger`; if the unique index rejects it, return the duplicate-submission error — do not fall through.
+   563→7. Generate a fresh random `response_group_id`.
+   564→8. Insert `responses` rows with **no** employee identifier of any kind.
+   565→9. Make the whole operation atomic (single transaction) or safely idempotent so two concurrent requests for the same employee + executive can never both succeed.
+   566→10. Never return `employee_hmac` in any API response.
+   567→11. Never log submitted answers or the identifier used to compute the HMAC.
+   568→
+   569→---
+   570→
+   571→## 14. ROLES
+   572→
+   573→- **SUPER_ADMIN** — full access, including admin user management.
+   574→- **SURVEY_ADMIN** — configure campaigns, manage executives/questions, publish/close/archive, view aggregated results, export reports. **Cannot** identify respondents or view any employee-linked response.
+   575→- **EMPLOYEE** — participate, evaluate executives, save/resume if enabled. Cannot access `/admin/*` or see any results.
+   576→
+   577→---
+   578→
+   579→## 15. API ROUTES
+   580→
+   581→**Employee:**
+   582→`GET /api/employee/campaign` · `GET /api/employee/executives` · `GET /api/employee/participation-status` · `GET /api/employee/executives/:id/questions` · `POST /api/employee/environment/submit` · `POST /api/employee/future/submit` · `POST /api/employee/evaluations/submit`
+   583→
+   584→**Admin — campaigns:**
+   585→`GET|POST /api/admin/campaigns` · `GET|PATCH|DELETE /api/admin/campaigns/:id` · `POST /api/admin/campaigns/:id/activate` · `POST /api/admin/campaigns/:id/close` · `POST /api/admin/campaigns/:id/archive` · `GET /api/admin/campaigns/:id/readiness` · `GET /api/admin/campaigns/:id/preview`
+   586→
+   587→**Admin — question library:**
+   588→`GET|POST /api/admin/questions` · `GET|PATCH|DELETE /api/admin/questions/:id` · `POST /api/admin/questions/:id/activate` · `POST /api/admin/questions/:id/deactivate`
+   589→
+   590→**Admin — campaign question assignment:**
+   591→`GET|POST /api/admin/campaigns/:campaignId/questions` · `PATCH|DELETE /api/admin/campaigns/:campaignId/questions/:questionId` · `POST /api/admin/campaigns/:campaignId/questions/reorder`
+   592→
+   593→**Admin — executives:**
+   594→`GET|POST /api/admin/executives` · `GET|PATCH|DELETE /api/admin/executives/:id` · `POST /api/admin/executives/:id/activate` · `POST /api/admin/executives/:id/deactivate`
+   595→
+   596→**Admin — campaign executive assignment:**
+   597→`GET|POST /api/admin/campaigns/:campaignId/executives` · `PATCH|DELETE /api/admin/campaigns/:campaignId/executives/:executiveId` · `POST /api/admin/campaigns/:campaignId/executives/reorder`
+   598→
+   599→**Admin — reporting:**
+   600→`GET /api/admin/reports/:campaignId` · `GET /api/admin/reports/:campaignId/environment` · `GET /api/admin/reports/:campaignId/future` · `GET /api/admin/reports/:campaignId/executive/:executiveId` · `GET /api/admin/reports/:campaignId/export`
+   601→
+   602→Every admin endpoint: verifies admin authorization, validates payloads, enforces campaign-status rules, writes a safe audit log entry, returns Arabic error messages, and never exposes employee identity.
+   603→
+   604→---
+   605→
+   606→## 16. REPORTING & ANALYTICS
+   607→
+   608→Aggregated only — **never expose raw response rows to any admin, ever.**
+   609→
+   610→**Executive report** — per executive, when responses ≥ threshold:
+   611→- Number of evaluations.
+   612→- Average score per question and per behavioral dimension (respect and professionalism, fairness, communication, listening/psychological safety, empowerment, performance management, development/recognition, collaboration, role-modeling).
+   613→- Response distribution per question.
+   614→- Favorable-response rate: `count(always + often) / count(valid responses)`.
+   615→- Strength areas / improvement areas (highest and lowest dimension scores).
+   616→- Not-applicable counts (excluded from averages).
+   617→- Comparison to the organization-wide average where meaningful.
+   618→- Trend vs. prior campaigns, once more than one exists.
+   619→
+   620→**Organization report:**
+   621→- Overall environment index.
+   622→- Question-level distributions across the 8 work-environment dimensions (respect & fairness, communication, leadership, empowerment, development, collaboration, psychological safety, role/goal clarity).
+   623→- Top improvement priorities and preferred future-environment themes (from §10.3).
+   624→- Positive / neutral / negative percentage breakdown per dimension, not just the average.
+   625→
+   626→**Do not rank executives.** No "best manager," no leaderboard, no #1/#last. Present each executive's profile neutrally, framed around development, not competition.
+   627→
+   628→**Minimum sample size:** default **5**, admin-configurable. Below threshold: hide detailed results and show "لا تتوفر بيانات كافية لعرض النتائج حالياً حفاظاً على سرية المشاركين." Apply the same suppression rule to any future demographic segmentation (department, tenure, etc.) if that's ever added.
+   629→
+   630→**Scoring formulas** (document in the README, in Arabic, exactly as implemented):
+   631→```
+   632→average_score = sum(valid_scores) / count(valid_scores)     // not_applicable excluded
+   633→favorable_rate = count(always_or_often) / count(valid_responses)
+   634→```
+   635→
+   636→Admin dashboard (`/admin/dashboard`, `/admin/reports/:campaignId`): active campaign & status, environment/future/executive response counts, number of executives evaluated, participation rate (if eligible population is knowable), last update time — **no identity-level records ever surfaced.**
+   637→
+   638→---
+   639→
+   640→## 17. EXPORTS
+   641→
+   642→Formats: UTF-8 CSV with BOM (Excel-compatible); XLSX only if it's already Workers-compatible in the stack you're extending.
+   643→
+   644→Arabic headers: اسم الحملة · اسم المسؤول · الإدارة · المحور · نص السؤال · عدد الإجابات · المتوسط · نسبة الإجابات الإيجابية · دائماً · غالباً · أحياناً · نادراً · أبداً · لا ينطبق.
+   645→
+   646→Exports must: respect the reporting threshold, and exclude employee identity, `employee_hmac`, IP addresses, and any raw participation-ledger records — aggregated numbers only.
+   647→
+   648→---
+   649→
+   650→## 18. SECURITY REQUIREMENTS
+   651→
+   652→- Secure, HttpOnly, SameSite session cookies where sessions are used; CSRF protection on all state-changing requests.
+   653→- Server-side authorization on every route — never trust a frontend check as the security boundary.
+   654→- Input validation via schemas; parameterized D1 queries only.
+   655→- Rate limiting on submission and admin-login endpoints.
+   656→- Secure headers, CSP where practical.
+   657→- No sensitive data in URLs or query strings.
+   658→- No third-party tracking/analytics scripts on employee-facing survey pages.
+   659→- `Cache-Control: no-store` on all employee and submission endpoints.
+   660→- Re-validate campaign status, executive eligibility, and question assignment on every submission — never trust client-supplied state.
+   661→
+   662→**Never log:** employee name, email, employee code, `employee_hmac`, survey answers, full request bodies, raw auth tokens.
+   663→**Safe to log:** route, an anonymous request ID, campaign ID, executive ID (where operationally needed), error category, timestamp.
+   664→
+   665→---
+   666→
+   667→## 19. CONFIRMATIONS (destructive/irreversible actions)
+   668→
+   669→| Action | Confirmation copy |
+   670→|---|---|
+   671→| Delete question | "هل أنت متأكد من حذف هذا السؤال؟ إذا كان مستخدماً في حملة أو مرتبطاً بنتائج سابقة، سيتم تعطيله بدلاً من حذفه نهائياً." |
+   672→| Remove manager from campaign | "هل تريد إزالة هذا المسؤول من الحملة؟ لن يتم حذف سجله العام، وسيظل متاحاً لإضافته لاحقاً." |
+   673→| Deactivate manager with historical responses | "هذا المسؤول لديه نتائج سابقة. سيتم إيقاف ظهوره للمشاركين مع الاحتفاظ بنتائجه التاريخية. هل تريد المتابعة؟" |
+   674→| Activate campaign | (see §7) |
+   675→
+   676→Enforce every one of these rules on the backend as well — the confirmation dialog is UX, not the security control.
+   677→
+   678→---
+   679→
+   680→## 20. AUDIT LOGGING
+   681→
+   682→Log: campaign created/edited/activated/closed/archived · question created/edited/deleted/activated/deactivated/assigned/removed/reordered · executive created/edited/deleted/activated/deactivated/assigned/removed/reordered · report exported. Each entry: `admin_user_id`, `action`, `entity_type`, `entity_id`, `campaign_id` (where relevant), `created_at`. **Never** log employee answers or identity in `metadata_json`.
+   683→
+   684→---
+   685→
+   686→## 21. TESTING REQUIREMENTS
+   687→
+   688→**Privacy:** response records contain no employee identity · `employee_hmac` never returned by any API · employee-facing endpoints can't retrieve identity · reports return aggregates only · reports blocked below threshold (test at 1, 4, and 5 responses — hidden, hidden, visible).
+   689→
+   690→**Duplicate prevention:** one participation per employee per campaign · evaluate Executive A once, second attempt rejected · same employee can still evaluate Executive B · concurrent duplicate requests cannot create duplicate rows (race-condition test) · environment and future sections each submit exactly once · direct API duplicate attempts (bypassing the UI) are rejected.
+   691→
+   692→**Authorization:** unauthenticated users cannot submit · employees cannot reach admin routes/APIs · inactive executives can't be evaluated · closed campaigns reject submissions · unassigned questions are rejected · forged frontend requests can't bypass locking.
+   693→
+   694→**Admin — questions:** create, edit (draft), delete (unused), used-question soft-delete, option validation, order persistence, historical snapshots stay unchanged after later edits to the library question.
+   695→
+   696→**Admin — executives:** create, edit, assign/remove on draft campaign, historical responses preserved on deactivation, inactive executives hidden from employees, order persistence.
+   697→
+   698→**Campaign locking:** draft/scheduled fully editable · active campaign rejects unsafe structural edits · closed is read-only · activation produces immutable snapshots · historical reports preserve original wording even after later question edits.
+   699→
+   700→**UI:** RTL layout correctness · evaluated-executive dropdown state · submit-button double-submit guard · mobile layout · Arabic validation copy · preview never writes real records.
+   701→
+   702→---
+   703→
+   704→## 22. SEED DATA
+   705→
+   706→**Executives (demo, clearly marked as such if real names aren't provided):** الرئيس التنفيذي · المدير التنفيذي للعمليات · المدير التنفيذي للمالية · مدير إدارة الموارد البشرية · مدير إدارة تقنية المعلومات · مدير إدارة العقارات · مدير إدارة المقاولات · مدير إدارة المعدات الكهربائية *(map to Almarshad's actual subsidiary structure — real estate, contracting, trading, electrical equipment, facility management — when real names are supplied)*.
+   707→
+   708→**Questions:** all of §10.1 (36 leadership), §10.2 (10 environment), §10.3 (4 future) — seeded into the library with sections, types, scores, and display order.
+   709→
+   710→**Demo campaign:** "استبيان بيئة العمل والقيادة المؤسسية - نسخة تجريبية", status = `draft`.
+   711→
+   712→---
+   713→
+   714→## 23. DEPLOYMENT DOCUMENTATION (README.md)
+   715→
+   716→1. Project overview & architecture summary.
+   717→2. Technology stack.
+   718→3. Local prerequisites.
+   719→4. Environment variables.
+   720→5. D1 setup (local + remote migration commands).
+   721→6. Seed commands (local + remote).
+   722→7. Development, build, lint, typecheck, test commands.
+   723→8. Admin auth setup & production secret setup.
+   724→9. Cloudflare deployment instructions.
+   725→10. Backup & recovery recommendations.
+   726→11. **Privacy architecture** — explained precisely enough that a non-engineer reviewer (e.g., legal/HR) can verify the claims made to employees.
+   727→12. Duplicate-prevention model.
+   728→13. Campaign lifecycle.
+   729→14. Admin control panel usage guide.
+   730→15. Testing instructions.
+   731→16. Troubleshooting.
+   732→17. Known limitations — including an honest statement about anything outside the app's control (identity-provider logs, infra-level logs) that could theoretically undermine full anonymity.
+   733→
+   734→Suggested scripts: `npm run dev|build|lint|typecheck|test`, `npm run db:migrate:local|remote`, `npm run db:seed:local|remote`, `npm run deploy` — adapted to whatever the inspected repo actually uses.
+   735→
+   736→---
+   737→
+   738→## 24. FINAL ACCEPTANCE CRITERIA
+   739→
+   740→Not complete until **all** of the following hold:
+   741→
+   742→**Build & quality:** runs locally · builds successfully · type-check, lint, and automated tests pass · D1 migrations run clean · seed data loads.
+   743→
+   744→**Survey:** Arabic RTL throughout, employee and admin sides · no free-text anywhere · database-driven executive dropdown · already-evaluated executives excluded from selection, server-enforced.
+   745→
+   746→**Duplicate & privacy:** one participation per employee per campaign, server-enforced · one evaluation per executive per employee, server-enforced against concurrent/direct-API attempts · no response record contains any employee identifier · `employee_hmac` never leaves the server.
+   747→
+   748→**Admin:** full CRUD + reorder on questions, executives, sections, per the rules in §11 · campaign create/assign/preview/readiness-check/activate/close/archive · unsafe edits locked after activation · historical data immutable and correctly reported.
+   749→
+   750→**Reporting:** aggregated only · suppressed below threshold · no executive ranking · exports contain no identity data.
+   751→
+   752→**Security:** admin auth/authz enforced · audit logging complete · no secrets committed · Cloudflare deployment config complete · README complete and accurate about the actual privacy guarantees delivered.
+   753→
+   754→---
+   755→
+   756→## 25. FINAL AGENT REPORT (required at handoff)
+   757→
+   758→1. Architecture summary.
+   759→2. Database schema summary.
+   760→3. Privacy & identity-separation explanation, stated precisely — no over-claiming.
+   761→4. Duplicate-prevention explanation.
+   762→5. Files created/modified.
+   763→6. Migration commands executed.
+   764→7. Seed commands executed.
+   765→8. Test results.
+   766→9. Build results.
+   767→10. Deployment command used.
+   768→11. Remaining limitations.
+   769→12. Business decisions that need your confirmation (e.g., real executive roster, real question subset for campaign #1, actual identity provider to wire up).
+   770→
+   771→Do not claim the system is completely anonymous if the underlying identity provider or Cloudflare infrastructure may retain logs outside the application's own database — state it as de-identified with the specific residual risk named.
