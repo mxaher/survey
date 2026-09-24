@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -34,25 +34,28 @@ export const GET = apiHandler(async () => {
   const { admin, deny } = await requireSuperAdmin();
   if (deny || !admin) return deny;
 
-  const users = await db.adminUser.findMany({
-    orderBy: { createdAt: "desc" },
-  });
+  const db = getDB();
+
+  const users = await db
+    .prepare("SELECT * FROM AdminUser ORDER BY createdAt DESC")
+    .all();
 
   // Fetch the most recent audit entry per admin user — this is our
   // "last activity" proxy for "last login". A single query with
   // groupBy gives us the latest createdAt per adminUserId.
-  const lastActivity = await db.auditLog.groupBy({
-    by: ["adminUserId"],
-    _max: { createdAt: true },
-  });
+  const lastActivity = await db
+    .prepare(
+      "SELECT adminUserId, MAX(createdAt) as lastCreatedAt FROM AuditLog GROUP BY adminUserId"
+    )
+    .all();
   const lastActivityById = new Map(
-    lastActivity
+    (lastActivity.results ?? [])
       .filter((a) => a.adminUserId !== null)
-      .map((a) => [a.adminUserId as string, a._max.createdAt])
+      .map((a) => [a.adminUserId as string, a.lastCreatedAt])
   );
 
   return ok({
-    users: users.map((u) => ({
+    users: (users.results ?? []).map((u) => ({
       id: u.id,
       externalId: u.externalId,
       displayName: u.displayName,
@@ -61,7 +64,7 @@ export const GET = apiHandler(async () => {
       isActive: u.isActive,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
-      lastLoginAt: lastActivityById.get(u.id) ?? null,
+      lastLoginAt: lastActivityById.get(u.id as string) ?? null,
     })),
   });
 });
@@ -85,6 +88,8 @@ export const POST = apiHandler(async (request: NextRequest) => {
   const { admin, deny } = await requireSuperAdmin();
   if (deny || !admin) return deny;
 
+  const db = getDB();
+
   const json = await request.json().catch(() => null);
   if (!json || typeof json !== "object") {
     return fail("صيغة الطلب غير صالحة.", 400);
@@ -96,43 +101,52 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const input = parsed.data;
 
-  const existing = await db.adminUser.findUnique({
-    where: { externalId: input.externalId },
-  });
+  const existing = await db
+    .prepare("SELECT id FROM AdminUser WHERE externalId = ?")
+    .bind(input.externalId)
+    .first();
   if (existing) {
     return fail("المعرّ الخارجي مستخدم بالفعل.", 409);
   }
 
-  const created = await db.adminUser.create({
-    data: {
-      externalId: input.externalId,
-      displayName: input.displayName ?? null,
-      email: input.email ?? null,
-      role: input.role,
-      isActive: input.isActive,
-    },
-  });
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await db
+    .prepare(
+      "INSERT INTO AdminUser (id, externalId, displayName, email, role, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(
+      id,
+      input.externalId,
+      input.displayName ?? null,
+      input.email ?? null,
+      input.role,
+      input.isActive,
+      now,
+      now
+    )
+    .run();
 
   await writeAudit({
     adminUserId: admin.adminId,
     action: "admin_user.create",
     entityType: "admin_user",
-    entityId: created.id,
+    entityId: id,
     metadata: {
-      externalId: created.externalId,
-      role: created.role,
+      externalId: input.externalId,
+      role: input.role,
     },
   });
 
   return ok(
     {
-      id: created.id,
-      externalId: created.externalId,
-      displayName: created.displayName,
-      email: created.email,
-      role: created.role,
-      isActive: created.isActive,
-      createdAt: created.createdAt,
+      id,
+      externalId: input.externalId,
+      displayName: input.displayName ?? null,
+      email: input.email ?? null,
+      role: input.role,
+      isActive: input.isActive,
+      createdAt: now,
     },
     { status: 201 }
   );

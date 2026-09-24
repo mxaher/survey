@@ -8,8 +8,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/admin/campaigns/[id]/readiness
- * Returns the readiness check result for the campaign — used by the admin
- * Readiness panel before activating.
+ * Returns the readiness check result for the campaign.
  */
 export const GET = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ id: string }> }) => {

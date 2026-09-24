@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -11,16 +11,13 @@ export const dynamic = "force-dynamic";
 
 const QUESTION_SCOPE_KEYS = QUESTION_SCOPES.map((s) => s.key);
 
-/** Returns true iff the campaign status allows structural edits to its
- *  question assignments (i.e. it hasn't been activated yet). */
 function isEditable(status: string): boolean {
   return status === "draft" || status === "scheduled";
 }
 
 /**
  * GET /api/admin/campaigns/[campaignId]/questions
- * Lists all question assignments for a campaign, joined with the question
- * and its options. Ordered by displayOrder.
+ * Lists all question assignments for a campaign, joined with the question and its options.
  */
 export const GET = apiHandler(
   async (
@@ -30,64 +27,79 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId } = await ctx.params;
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    const configs = await db.campaignQuestionConfig.findMany({
-      where: { campaignId },
-      orderBy: { displayOrder: "asc" },
-      include: {
-        question: {
-          include: {
-            options: { orderBy: { displayOrder: "asc" } },
-          },
-        },
-      },
-    });
+    const configs = await db.prepare(
+      `SELECT cqc.campaignId, cqc.questionId, cqc.scope, cqc.isRequired,
+              cqc.displayOrder AS qcDisplayOrder, cqc.createdAt, cqc.updatedAt,
+              q.id AS qId, q.code AS qCode, q.questionAr AS qQuestionAr,
+              q.questionType AS qQuestionType, q.section AS qSection,
+              q.dimension AS qDimension, q.isRequired AS qIsRequired,
+              q.displayOrder AS qDisplayOrder, q.maxSelections AS qMaxSelections,
+              q.version AS qVersion, q.isActive AS qIsActive, q.deletedAt AS qDeletedAt
+       FROM CampaignQuestionConfig cqc
+       JOIN Question q ON q.id = cqc.questionId
+       WHERE cqc.campaignId = ?
+       ORDER BY cqc.displayOrder ASC`
+    ).bind(campaignId).all();
+
+    // Fetch options for all questions
+    const qIds = configs.results.map(
+      (qc: Record<string, unknown>) => qc.qId as string
+    );
+    let allOptions: Record<string, unknown>[] = [];
+    if (qIds.length > 0) {
+      const ph = qIds.map(() => "?").join(",");
+      allOptions = (await db.prepare(
+        `SELECT * FROM QuestionOption WHERE questionId IN (${ph}) ORDER BY displayOrder ASC`
+      ).bind(...qIds).all()).results as Record<string, unknown>[];
+    }
 
     return ok({
       campaign: {
         id: campaign.id,
         titleAr: campaign.titleAr,
         status: campaign.status,
-        editable: isEditable(campaign.status),
+        editable: isEditable(campaign.status as string),
       },
-      assignments: configs.map((c) => ({
+      assignments: configs.results.map((c: Record<string, unknown>) => ({
         campaignId: c.campaignId,
         questionId: c.questionId,
         scope: c.scope,
         isRequired: c.isRequired,
-        displayOrder: c.displayOrder,
+        displayOrder: c.qcDisplayOrder,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
-        question: c.question
-          ? {
-              id: c.question.id,
-              code: c.question.code,
-              questionAr: c.question.questionAr,
-              questionType: c.question.questionType,
-              section: c.question.section,
-              dimension: c.question.dimension,
-              isRequired: c.question.isRequired,
-              displayOrder: c.question.displayOrder,
-              maxSelections: c.question.maxSelections,
-              version: c.question.version,
-              isActive: c.question.isActive,
-              deletedAt: c.question.deletedAt,
-              options: c.question.options.map((o) => ({
-                id: o.id,
-                value: o.value,
-                labelAr: o.labelAr,
-                score: o.score,
-                displayOrder: o.displayOrder,
-                isActive: o.isActive,
-              })),
-            }
-          : null,
+        question: {
+          id: c.qId,
+          code: c.qCode,
+          questionAr: c.qQuestionAr,
+          questionType: c.qQuestionType,
+          section: c.qSection,
+          dimension: c.qDimension,
+          isRequired: c.qIsRequired,
+          displayOrder: c.qDisplayOrder,
+          maxSelections: c.qMaxSelections,
+          version: c.qVersion,
+          isActive: c.qIsActive,
+          deletedAt: c.qDeletedAt,
+          options: allOptions
+            .filter((o) => o.questionId === c.qId)
+            .map((o) => ({
+              id: o.id,
+              value: o.value,
+              labelAr: o.labelAr,
+              score: o.score,
+              displayOrder: o.displayOrder,
+              isActive: o.isActive,
+            })),
+        },
       })),
     });
   }
@@ -96,16 +108,6 @@ export const GET = apiHandler(
 /**
  * POST /api/admin/campaigns/[campaignId]/questions
  * Assigns one or more questions to a DRAFT or SCHEDULED campaign.
- *
- * Body:
- *   { questionIds: string[], scope?, isRequired?, displayOrder? }
- *
- * - Rejects for active/closed/archived campaigns with MESSAGES.cannotEditActiveCampaign.
- * - Idempotent: existing assignments are skipped.
- * - Each new assignment gets the supplied `scope`/`isRequired`/`displayOrder`
- *   (or sensible defaults).
- * - Wrapped in db.$transaction.
- * - Audits `campaign_question.assign` with the list of newly-assigned ids.
  */
 const assignSchema = z.object({
   questionIds: z
@@ -129,6 +131,7 @@ export const POST = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json) return fail("صيغة الطلب غير صالحة.", 400);
@@ -142,28 +145,25 @@ export const POST = apiHandler(
     }
     const input = parsed.data;
 
-    // Re-validate campaign status from the DB (never trust the client).
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
-    if (!isEditable(campaign.status)) {
+    if (!isEditable(campaign.status as string)) {
       return fail(MESSAGES.cannotEditActiveCampaign, 400, {
         status: campaign.status,
       });
     }
 
-    // De-duplicate the incoming ids defensively.
     const uniqueIds = Array.from(new Set(input.questionIds));
 
-    // Validate that every question exists and is not soft-deleted.
-    const validQuestions = await db.question.findMany({
-      where: { id: { in: uniqueIds }, deletedAt: null },
-      select: { id: true, code: true, isActive: true },
-    });
-    const validIds = new Set(validQuestions.map((q) => q.id));
-    const invalid = uniqueIds.filter((id) => !validIds.has(id));
+    // Validate every question exists and is not soft-deleted
+    const ph = uniqueIds.map(() => "?").join(",");
+    const validQuestions = await db.prepare(
+      `SELECT id FROM Question WHERE id IN (${ph}) AND deletedAt IS NULL`
+    ).bind(...uniqueIds).all();
+    const validIds = new Set(validQuestions.results.map((q: Record<string, unknown>) => q.id));
+    const invalid = uniqueIds.filter((qid) => !validIds.has(qid));
     if (invalid.length > 0) {
       return fail(
         "بعض الأسئلة المحددة غير موجودة أو محذوفة.",
@@ -172,16 +172,14 @@ export const POST = apiHandler(
       );
     }
 
-    // Find which ids are already assigned (skip those — idempotent).
-    const existing = await db.campaignQuestionConfig.findMany({
-      where: { campaignId, questionId: { in: uniqueIds } },
-      select: { questionId: true },
-    });
-    const existingIds = new Set(existing.map((e) => e.questionId));
-    const toCreate = uniqueIds.filter((id) => !existingIds.has(id));
+    // Find which ids are already assigned
+    const existing = await db.prepare(
+      `SELECT questionId FROM CampaignQuestionConfig WHERE campaignId = ? AND questionId IN (${ph})`
+    ).bind(campaignId, ...uniqueIds).all();
+    const existingIds = new Set(existing.results.map((e: Record<string, unknown>) => e.questionId));
+    const toCreate = uniqueIds.filter((qid) => !existingIds.has(qid));
 
     if (toCreate.length === 0) {
-      // Nothing to do — still audit the idempotent no-op for traceability.
       await writeAudit({
         adminUserId: admin.adminId,
         action: "campaign_question.assign",
@@ -202,49 +200,34 @@ export const POST = apiHandler(
       });
     }
 
-    // Resolve a sensible displayOrder: if the body supplied one, use it for
-    // every new row; otherwise append after the current max.
+    // Resolve displayOrder
     let baseOrder = input.displayOrder;
     if (baseOrder === undefined) {
-      const maxRow = await db.campaignQuestionConfig.findFirst({
-        where: { campaignId },
-        orderBy: { displayOrder: "desc" },
-        select: { displayOrder: true },
-      });
-      baseOrder = (maxRow?.displayOrder ?? -1) + 1;
+      const maxRow = await db.prepare(
+        `SELECT displayOrder FROM CampaignQuestionConfig WHERE campaignId = ? ORDER BY displayOrder DESC LIMIT 1`
+      ).bind(campaignId).first() as Record<string, unknown> | null;
+      baseOrder = ((maxRow?.displayOrder as number) ?? -1) + 1;
     }
 
-    const created = await db.$transaction(async (tx) => {
-      // Re-read campaign status inside the tx to be race-condition-safe.
-      const c = await tx.campaign.findUnique({
-        where: { id: campaignId },
-        select: { status: true },
-      });
-      if (!c) throw new Error("campaign_not_found");
-      if (!isEditable(c.status)) throw new Error("invalid_status");
+    const now = new Date().toISOString();
+    const statements: ReturnType<typeof db.prepare>[] = [];
+    const rows: { questionId: string; scope: string; isRequired: boolean; displayOrder: number }[] = [];
 
-      const rows: { questionId: string; scope: string; isRequired: boolean; displayOrder: number }[] = [];
-      let i = 0;
-      for (const qId of toCreate) {
-        const row = await tx.campaignQuestionConfig.create({
-          data: {
-            campaignId,
-            questionId: qId,
-            scope: input.scope ?? "organization",
-            isRequired: input.isRequired ?? true,
-            displayOrder: baseOrder + i,
-          },
-        });
-        rows.push({
-          questionId: row.questionId,
-          scope: row.scope,
-          isRequired: row.isRequired,
-          displayOrder: row.displayOrder,
-        });
-        i++;
-      }
-      return rows;
-    });
+    let i = 0;
+    for (const qId of toCreate) {
+      const scope = input.scope ?? "organization";
+      const isReq = input.isRequired ?? true;
+      rows.push({ questionId: qId, scope, isRequired: isReq, displayOrder: baseOrder + i });
+      statements.push(
+        db.prepare(
+          `INSERT INTO CampaignQuestionConfig (campaignId, questionId, scope, isRequired, displayOrder, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(campaignId, qId, scope, isReq ? 1 : 0, baseOrder + i, now, now)
+      );
+      i++;
+    }
+
+    await db.batch(statements);
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -253,7 +236,7 @@ export const POST = apiHandler(
       campaignId,
       metadata: {
         requested: uniqueIds,
-        created: created.map((c) => c.questionId),
+        created: rows.map((r) => r.questionId),
         skipped: Array.from(existingIds),
       },
     });
@@ -261,9 +244,9 @@ export const POST = apiHandler(
     return ok(
       {
         campaignId,
-        assigned: created,
+        assigned: rows,
         skipped: Array.from(existingIds),
-        created: created.length,
+        created: rows.length,
       },
       { status: 201 }
     );

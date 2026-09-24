@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -11,112 +11,129 @@ const COPY_SUFFIX = " (نسخة)";
 
 /**
  * POST /api/admin/campaigns/[id]/copy
- *
- * Create a new DRAFT campaign copying:
- *   - titleAr (with " (نسخة)" suffix)
- *   - descriptionAr, instructionsAr
- *   - all toggles + privacy notice
- *   - min/max executives, allowResume, threshold
- * NOT copied:
- *   - status (forced to 'draft')
- *   - startsAt/endsAt (cleared — admin re-schedules)
- *   - activatedAt/closedAt (null)
- *   - questionSnapshots (only generated at activation)
- *
- * Also copies CampaignExecutive + CampaignQuestionConfig assignments.
- * Wrapped in `db.$transaction` so a partial copy doesn't leave orphans.
+ * Creates a new DRAFT campaign copying fields + executive + question assignments.
+ * Wrapped in D1 batch for atomicity.
  */
 export const POST = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const source = await db.campaign.findUnique({
-      where: { id },
-      include: {
-        executives: true,
-        questionConfig: true,
-      },
-    });
+
+    const source = await db.prepare(
+      `SELECT * FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
     if (!source) return fail("الحملة غير موجودة.", 404);
 
+    // Fetch executives and question configs
+    const execRows = await db.prepare(
+      `SELECT * FROM CampaignExecutive WHERE campaignId = ?`
+    ).bind(id).all();
+
+    const qcRows = await db.prepare(
+      `SELECT * FROM CampaignQuestionConfig WHERE campaignId = ?`
+    ).bind(id).all();
+
+    const newId = crypto.randomUUID();
+    const now = new Date().toISOString();
     const newTitle = `${source.titleAr}${COPY_SUFFIX}`;
 
-    const result = await db.$transaction(async (tx) => {
-      const created = await tx.campaign.create({
-        data: {
-          titleAr: newTitle,
-          descriptionAr: source.descriptionAr,
-          instructionsAr: source.instructionsAr,
-          status: "draft",
-          startsAt: null,
-          endsAt: null,
-          timezone: source.timezone,
-          minimumReportingThreshold: source.minimumReportingThreshold,
-          enableEnvironmentSurvey: source.enableEnvironmentSurvey,
-          enableFutureSurvey: source.enableFutureSurvey,
-          allowMultipleExecutiveEvaluations:
-            source.allowMultipleExecutiveEvaluations,
-          minExecutives: source.minExecutives,
-          maxExecutives: source.maxExecutives,
-          allowResume: source.allowResume,
-          privacyNoticeAr: source.privacyNoticeAr,
-          activatedAt: null,
-          closedAt: null,
-          createdBy: admin.adminId,
-        },
-      });
+    const statements: ReturnType<typeof db.prepare>[] = [];
 
-      // Copy executive assignments.
-      for (const ce of source.executives) {
-        await tx.campaignExecutive.create({
-          data: {
-            campaignId: created.id,
-            executiveId: ce.executiveId,
-            displayOrder: ce.displayOrder,
-            isEnabled: ce.isEnabled,
-          },
-        });
-      }
+    // 1. Insert new campaign
+    statements.push(
+      db.prepare(
+        `INSERT INTO Campaign
+          (id, titleAr, descriptionAr, instructionsAr, status, startsAt, endsAt,
+           timezone, minimumReportingThreshold, enableEnvironmentSurvey, enableFutureSurvey,
+           allowMultipleExecutiveEvaluations, minExecutives, maxExecutives, allowResume,
+           privacyNoticeAr, activatedAt, closedAt, createdBy, createdAt, updatedAt)
+        VALUES (?, ?, ?, ?, 'draft', null, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?, ?)`
+      ).bind(
+        newId,
+        newTitle,
+        source.descriptionAr,
+        source.instructionsAr,
+        source.timezone,
+        source.minimumReportingThreshold,
+        source.enableEnvironmentSurvey ? 1 : 0,
+        source.enableFutureSurvey ? 1 : 0,
+        source.allowMultipleExecutiveEvaluations ? 1 : 0,
+        source.minExecutives ?? null,
+        source.maxExecutives ?? null,
+        source.allowResume ? 1 : 0,
+        source.privacyNoticeAr ?? null,
+        admin.adminId,
+        now,
+        now
+      )
+    );
 
-      // Copy question configs.
-      for (const qc of source.questionConfig) {
-        await tx.campaignQuestionConfig.create({
-          data: {
-            campaignId: created.id,
-            questionId: qc.questionId,
-            scope: qc.scope,
-            isRequired: qc.isRequired,
-            displayOrder: qc.displayOrder,
-          },
-        });
-      }
+    // 2. Copy executive assignments
+    for (const ce of execRows.results) {
+      statements.push(
+        db.prepare(
+          `INSERT INTO CampaignExecutive
+            (campaignId, executiveId, displayOrder, isEnabled, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(
+          newId,
+          ce.executiveId,
+          ce.displayOrder,
+          ce.isEnabled ? 1 : 0,
+          now,
+          now
+        )
+      );
+    }
 
-      return {
-        id: created.id,
-        titleAr: created.titleAr,
-        status: created.status,
-        createdAt: created.createdAt,
-        copiedExecutives: source.executives.length,
-        copiedQuestions: source.questionConfig.length,
-      };
-    });
+    // 3. Copy question configs
+    for (const qc of qcRows.results) {
+      statements.push(
+        db.prepare(
+          `INSERT INTO CampaignQuestionConfig
+            (campaignId, questionId, scope, isRequired, displayOrder, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          newId,
+          qc.questionId,
+          qc.scope,
+          qc.isRequired ? 1 : 0,
+          qc.displayOrder,
+          now,
+          now
+        )
+      );
+    }
+
+    await db.batch(statements);
 
     await writeAudit({
       adminUserId: admin.adminId,
       action: "campaign.copy",
       entityType: "campaign",
-      entityId: result.id,
-      campaignId: result.id,
+      entityId: newId,
+      campaignId: newId,
       metadata: {
         sourceCampaignId: id,
-        newTitle: result.titleAr,
-        copiedExecutives: result.copiedExecutives,
-        copiedQuestions: result.copiedQuestions,
+        newTitle,
+        copiedExecutives: execRows.results.length,
+        copiedQuestions: qcRows.results.length,
       },
     });
 
-    return ok(result, { status: 201 });
+    return ok(
+      {
+        id: newId,
+        titleAr: newTitle,
+        status: "draft",
+        createdAt: now,
+        copiedExecutives: execRows.results.length,
+        copiedQuestions: qcRows.results.length,
+      },
+      { status: 201 }
+    );
   }
 );

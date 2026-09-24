@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { noStore, fail, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
@@ -12,24 +12,6 @@ const QuerySchema = z.object({
   campaignId: z.string().min(1),
 });
 
-/**
- * GET /api/employee/executives?campaignId=...
- *
- * Returns the list of executives assigned+enabled to this campaign
- * (`CampaignExecutive` where `isEnabled=true` AND `executive.isActive=true`,
- * ordered by displayOrder) with fields: id, nameAr, titleAr, category,
- * departmentAr.
- *
- * ALSO returns `evaluatedExecutiveIds: string[]` — the executive IDs this
- * employee has already evaluated (ParticipationLedger rows for
- * campaignId + employeeHmac + participationType='executive' + status='submitted').
- *
- * Auth: 401 with MESSAGES.unauthorized if no verified employee.
- * If the campaign isn't active / is outside its window: 400 with
- * MESSAGES.noActiveCampaign or MESSAGES.campaignClosed.
- *
- * NEVER returns `employeeHmac`. `Cache-Control: no-store` via `noStore()`.
- */
 export const GET = apiHandler(async (request: NextRequest) => {
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
@@ -46,59 +28,59 @@ export const GET = apiHandler(async (request: NextRequest) => {
   }
   const { campaignId } = parsed.data;
 
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    select: {
-      id: true,
-      status: true,
-      startsAt: true,
-      endsAt: true,
-    },
-  });
+  const db = getDB();
+
+  const campaign = await db
+    .prepare(
+      "SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?"
+    )
+    .bind(campaignId)
+    .first();
 
   if (!campaign || campaign.status !== "active") {
     return fail(MESSAGES.noActiveCampaign, 400);
   }
   const now = nowUtc();
-  const window = isWithinActiveWindow(now, campaign.startsAt, campaign.endsAt);
+  const window = isWithinActiveWindow(
+    now,
+    new Date(campaign.startsAt as string),
+    new Date(campaign.endsAt as string)
+  );
   if (!window.active) {
     return fail(MESSAGES.campaignClosed, 400);
   }
 
-  // Assigned + enabled + active executives.
-  const assignments = await db.campaignExecutive.findMany({
-    where: {
-      campaignId,
-      isEnabled: true,
-      executive: { isActive: true, deletedAt: null },
-    },
-    include: { executive: true },
-    orderBy: { displayOrder: "asc" },
-  });
+  const { results: assignments } = await db
+    .prepare(
+      `SELECT ce.id, ce.displayOrder, ce.isEnabled,
+              e.id AS executiveId, e.nameAr, e.titleAr, e.category, e.departmentAr
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ? AND ce.isEnabled = 1 AND e.isActive = 1 AND e.deletedAt IS NULL
+       ORDER BY ce.displayOrder ASC`
+    )
+    .bind(campaignId)
+    .all();
 
-  const executives = assignments.map((a) => ({
-    id: a.executive.id,
-    nameAr: a.executive.nameAr,
-    titleAr: a.executive.titleAr,
-    category: a.executive.category,
-    departmentAr: a.executive.departmentAr,
+  const executives = assignments.map((a: any) => ({
+    id: a.executiveId,
+    nameAr: a.nameAr,
+    titleAr: a.titleAr,
+    category: a.category,
+    departmentAr: a.departmentAr,
     displayOrder: a.displayOrder,
   }));
 
-  // Already-evaluated executive IDs for this employee.
-  const evaluated = await db.participationLedger.findMany({
-    where: {
-      campaignId,
-      employeeHmac,
-      participationType: "executive",
-      status: "submitted",
-    },
-    select: { scopeKey: true },
-  });
+  const { results: evaluated } = await db
+    .prepare(
+      "SELECT scopeKey FROM ParticipationLedger WHERE campaignId = ? AND employeeHmac = ? AND participationType = 'executive' AND status = 'submitted'"
+    )
+    .bind(campaignId, employeeHmac)
+    .all();
+
   const evaluatedExecutiveIds = evaluated
-    .map((r) => r.scopeKey)
-    // Defensive: scopeKey is the executiveId for participationType='executive'.
-    .filter((id): id is string => Boolean(id));
+    .map((r: any) => r.scopeKey)
+    .filter((id: any): id is string => Boolean(id));
 
   return noStore({
     executives,

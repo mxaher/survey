@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { noStore, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -9,58 +9,82 @@ export const dynamic = "force-dynamic";
 
 /**
  * GET /api/admin/campaigns/[id]/preview
- *
- * Returns the exact data shape the employee UI will consume, for the admin
- * preview screen. Read-only — never writes participation or response rows.
- *
- * Shape:
- *   {
- *     campaign: { ... stripped fields, with privacyNoticeAr resolved },
- *     environment:  { enabled, questions: [...] },
- *     leadership:   { questions: [...] },          // executive-scoped
- *     executives:   [ { executiveId, nameAr, titleAr, ... } ],
- *     future:       { enabled, questions: [...] }
- *   }
- *
- * For active/closed/archived campaigns we serve the FROZEN snapshots
- * (what the employee actually sees). For draft/scheduled we serve the live
- * question library + CampaignQuestionConfig (what the employee would see if
- * activated right now).
+ * Returns the exact data shape the employee UI will consume.
  */
 export const GET = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
 
-    const campaign = await db.campaign.findUnique({
-      where: { id },
-      include: {
-        executives: {
-          include: { executive: true },
-          orderBy: { displayOrder: "asc" },
-        },
-        questionConfig: {
-          include: { question: { include: { options: true } } },
-          orderBy: { displayOrder: "asc" },
-        },
-        questionSnapshots: {
-          include: { options: true },
-          orderBy: { displayOrder: "asc" },
-        },
-      },
-    });
-
+    // 1. Campaign row
+    const campaign = await db.prepare(
+      `SELECT * FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    // Resolve privacy notice: campaign-level override > system setting > bundled constant.
-    let privacyNoticeAr = campaign.privacyNoticeAr;
+    // 2. Executives with joined executive data
+    const executives = await db.prepare(
+      `SELECT ce.campaignId, ce.executiveId, ce.displayOrder, ce.isEnabled,
+              e.nameAr, e.titleAr, e.category, e.departmentAr, e.isActive, e.deletedAt
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ?
+       ORDER BY ce.displayOrder ASC`
+    ).bind(id).all();
+
+    // 3. Question configs with joined question
+    const questionConfigs = await db.prepare(
+      `SELECT cqc.campaignId, cqc.questionId, cqc.scope, cqc.isRequired,
+              cqc.displayOrder AS qcDisplayOrder,
+              q.id AS qId, q.code AS qCode, q.questionAr AS qQuestionAr,
+              q.questionType AS qQuestionType, q.section AS qSection,
+              q.dimension AS qDimension, q.isRequired AS qIsRequired,
+              q.isActive AS qIsActive, q.deletedAt AS qDeletedAt,
+              q.maxSelections AS qMaxSelections
+       FROM CampaignQuestionConfig cqc
+       JOIN Question q ON q.id = cqc.questionId
+       WHERE cqc.campaignId = ?
+       ORDER BY cqc.displayOrder ASC`
+    ).bind(id).all();
+
+    // 4. Fetch options for all questions
+    const qIds = questionConfigs.results.map(
+      (qc: Record<string, unknown>) => qc.qId as string
+    );
+    let allOptions: Record<string, unknown>[] = [];
+    if (qIds.length > 0) {
+      const ph = qIds.map(() => "?").join(",");
+      allOptions = (await db.prepare(
+        `SELECT * FROM QuestionOption WHERE questionId IN (${ph})`
+      ).bind(...qIds).all()).results as Record<string, unknown>[];
+    }
+
+    // 5. Question snapshots + option snapshots (for frozen campaigns)
+    const snapshots = await db.prepare(
+      `SELECT * FROM CampaignQuestionSnapshot WHERE campaignId = ? ORDER BY displayOrder ASC`
+    ).bind(id).all();
+
+    const snapshotIds = snapshots.results.map(
+      (s: Record<string, unknown>) => s.id as string
+    );
+    let allSnapshotOptions: Record<string, unknown>[] = [];
+    if (snapshotIds.length > 0) {
+      const ph = snapshotIds.map(() => "?").join(",");
+      allSnapshotOptions = (await db.prepare(
+        `SELECT * FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId IN (${ph})`
+      ).bind(...snapshotIds).all()).results as Record<string, unknown>[];
+    }
+
+    // 6. Resolve privacy notice
+    let privacyNoticeAr = campaign.privacyNoticeAr as string | null;
     if (!privacyNoticeAr || privacyNoticeAr.trim() === "") {
-      const setting = await db.systemSetting.findUnique({
-        where: { key: "privacy_notice" },
-      });
-      privacyNoticeAr = setting?.valueAr ?? PRIVACY_NOTICE;
+      const setting = await db.prepare(
+        `SELECT valueAr FROM SystemSetting WHERE key = 'privacy_notice'`
+      ).first() as Record<string, unknown> | null;
+      privacyNoticeAr = (setting?.valueAr as string) ?? PRIVACY_NOTICE;
     }
 
     const baseCampaign = {
@@ -85,21 +109,19 @@ export const GET = apiHandler(
       closedAt: campaign.closedAt,
     };
 
-    // Active executives only (isEnabled on CE + isActive + not soft-deleted).
-    const executives = campaign.executives
+    // Active executives only
+    const execList = executives.results
       .filter(
-        (ce) =>
-          ce.isEnabled &&
-          ce.executive?.isActive &&
-          ce.executive?.deletedAt === null
+        (ce: Record<string, unknown>) =>
+          ce.isEnabled && ce.isActive && !ce.deletedAt
       )
-      .map((ce) => ({
+      .map((ce: Record<string, unknown>) => ({
         executiveId: ce.executiveId,
         displayOrder: ce.displayOrder,
-        nameAr: ce.executive.nameAr,
-        titleAr: ce.executive.titleAr,
-        category: ce.executive.category,
-        departmentAr: ce.executive.departmentAr,
+        nameAr: ce.nameAr,
+        titleAr: ce.titleAr,
+        category: ce.category,
+        departmentAr: ce.departmentAr,
       }));
 
     const isFrozen =
@@ -107,12 +129,12 @@ export const GET = apiHandler(
       campaign.status === "closed" ||
       campaign.status === "archived";
 
-    if (isFrozen && campaign.questionSnapshots.length > 0) {
-      // Serve frozen snapshots.
+    if (isFrozen && snapshots.results.length > 0) {
+      // Serve frozen snapshots
       const bySection = (section: string) =>
-        campaign.questionSnapshots
-          .filter((s) => s.section === section)
-          .map((s) => ({
+        snapshots.results
+          .filter((s: Record<string, unknown>) => s.section === section)
+          .map((s: Record<string, unknown>) => ({
             snapshotId: s.id,
             originalQuestionId: s.originalQuestionId,
             questionCode: s.questionCode,
@@ -123,8 +145,9 @@ export const GET = apiHandler(
             isRequired: s.isRequired,
             displayOrder: s.displayOrder,
             maxSelections: s.maxSelections,
-            options: s.options
-              .sort((a, b) => a.displayOrder - b.displayOrder)
+            options: allSnapshotOptions
+              .filter((o) => o.campaignQuestionSnapshotId === s.id)
+              .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number))
               .map((o) => ({
                 id: o.id,
                 value: o.value,
@@ -144,7 +167,7 @@ export const GET = apiHandler(
         leadership: {
           questions: bySection("leadership"),
         },
-        executives,
+        executives: execList,
         future: {
           enabled: campaign.enableFutureSurvey,
           questions: bySection("future"),
@@ -152,28 +175,29 @@ export const GET = apiHandler(
       });
     }
 
-    // Draft / scheduled: serve live question library + CampaignQuestionConfig.
-    const activeConfigs = campaign.questionConfig.filter(
-      (qc) => qc.question?.isActive && qc.question?.deletedAt === null
-    );
+    // Draft / scheduled: serve live question library + CampaignQuestionConfig
+    const activeConfigs = questionConfigs.results
+      .filter(
+        (qc: Record<string, unknown>) => qc.qIsActive && qc.qDeletedAt === null
+      );
 
     const bySection = (section: string) =>
       activeConfigs
-        .filter((qc) => qc.question.section === section)
-        .map((qc) => ({
+        .filter((qc: Record<string, unknown>) => qc.qSection === section)
+        .map((qc: Record<string, unknown>) => ({
           questionId: qc.questionId,
-          code: qc.question.code,
-          questionAr: qc.question.questionAr,
-          questionType: qc.question.questionType,
-          section: qc.question.section,
-          dimension: qc.question.dimension,
+          code: qc.qCode,
+          questionAr: qc.qQuestionAr,
+          questionType: qc.qQuestionType,
+          section: qc.qSection,
+          dimension: qc.qDimension,
           isRequired: qc.isRequired,
           scope: qc.scope,
-          displayOrder: qc.displayOrder,
-          maxSelections: qc.question.maxSelections,
-          options: qc.question.options
-            .filter((o) => o.isActive)
-            .sort((a, b) => a.displayOrder - b.displayOrder)
+          displayOrder: qc.qcDisplayOrder,
+          maxSelections: qc.qMaxSelections,
+          options: allOptions
+            .filter((o) => o.questionId === qc.qId && o.isActive)
+            .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number))
             .map((o) => ({
               id: o.id,
               value: o.value,
@@ -193,7 +217,7 @@ export const GET = apiHandler(
       leadership: {
         questions: bySection("leadership"),
       },
-      executives,
+      executives: execList,
       future: {
         enabled: campaign.enableFutureSurvey,
         questions: bySection("future"),

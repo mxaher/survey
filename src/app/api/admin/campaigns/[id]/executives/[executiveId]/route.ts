@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -14,17 +14,7 @@ function isEditable(status: string): boolean {
 
 /**
  * PATCH /api/admin/campaigns/[campaignId]/executives/[executiveId]
- *
- * Update `isEnabled` / `displayOrder` for a single executive assignment.
- *
- * For draft/scheduled campaigns: full update allowed.
- * For active campaigns: allowed ONLY for `isEnabled` (toggle visibility
- *   for participants) — `displayOrder` changes are refused as structural
- *   because they would alter the participant's view mid-flight.
- * For closed/archived: refused entirely.
- *
- * Re-validates campaign status from the DB before mutating.
- * Audits `campaign_executive.update`.
+ * Update isEnabled / displayOrder for a single executive assignment.
  */
 const patchSchema = z.object({
   isEnabled: z.coerce.boolean().optional(),
@@ -41,6 +31,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId, executiveId } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -56,10 +47,9 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data as Record<string, unknown>;
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
     if (campaign.status === "closed" || campaign.status === "archived") {
@@ -70,7 +60,6 @@ export const PATCH = apiHandler(
     }
 
     if (campaign.status === "active") {
-      // Only `isEnabled` may be changed on an active campaign.
       const attemptedFields = Object.keys(input);
       const unsafe = attemptedFields.filter((k) => k !== "isEnabled");
       if (unsafe.length > 0) {
@@ -79,27 +68,37 @@ export const PATCH = apiHandler(
         });
       }
     }
-    // status=draft|scheduled → all editable
 
-    const existing = await db.campaignExecutive.findUnique({
-      where: { campaignId_executiveId: { campaignId, executiveId } },
-    });
+    const existing = await db.prepare(
+      `SELECT * FROM CampaignExecutive WHERE campaignId = ? AND executiveId = ?`
+    ).bind(campaignId, executiveId).first() as Record<string, unknown> | null;
     if (!existing) {
       return fail("الإسناد غير موجود لهذه الحملة.", 404);
     }
 
-    const data: Record<string, unknown> = {};
+    // Build SET clause
+    const setParts: string[] = [];
+    const bindValues: unknown[] = [];
     for (const k of ["isEnabled", "displayOrder"]) {
-      if (input[k] !== undefined) data[k] = input[k];
+      if (input[k] !== undefined) {
+        let val = input[k];
+        if (typeof val === "boolean") val = val ? 1 : 0;
+        setParts.push(`${k} = ?`);
+        bindValues.push(val);
+      }
     }
 
-    const updated =
-      Object.keys(data).length > 0
-        ? await db.campaignExecutive.update({
-            where: { campaignId_executiveId: { campaignId, executiveId } },
-            data: data as Parameters<typeof db.campaignExecutive.update>[0]["data"],
-          })
-        : existing;
+    if (setParts.length > 0) {
+      setParts.push("updatedAt = datetime('now')");
+      bindValues.push(campaignId, executiveId);
+      await db.prepare(
+        `UPDATE CampaignExecutive SET ${setParts.join(", ")} WHERE campaignId = ? AND executiveId = ?`
+      ).bind(...bindValues).run();
+    }
+
+    const updated = await db.prepare(
+      `SELECT * FROM CampaignExecutive WHERE campaignId = ? AND executiveId = ?`
+    ).bind(campaignId, executiveId).first() as Record<string, unknown>;
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -108,7 +107,7 @@ export const PATCH = apiHandler(
       entityId: executiveId,
       campaignId,
       metadata: {
-        fields: Object.keys(data),
+        fields: Object.keys(input),
         status: campaign.status,
         previous: {
           isEnabled: existing.isEnabled,
@@ -133,17 +132,6 @@ export const PATCH = apiHandler(
 
 /**
  * DELETE /api/admin/campaigns/[campaignId]/executives/[executiveId]
- *
- * - For DRAFT / SCHEDULED campaigns: hard-delete the assignment row.
- * - For ACTIVE campaigns: if the executive has any Response rows for this
- *   campaign, refuse to hard-delete and instead set `isEnabled=false`
- *   (preserving history); return MESSAGES.removeExecutiveFromActiveWithHistory.
- *   If no responses exist for this exec in this campaign, hard-delete the
- *   assignment (no history to preserve).
- * - For CLOSED / ARCHIVED: refused entirely.
- *
- * Audits `campaign_executive.remove` (or `campaign_executive.disable_active`
- * for the soft-disable path) for traceability.
  */
 export const DELETE = apiHandler(
   async (
@@ -155,12 +143,12 @@ export const DELETE = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId, executiveId } = await ctx.params;
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
     if (campaign.status === "closed" || campaign.status === "archived") {
@@ -170,25 +158,23 @@ export const DELETE = apiHandler(
       );
     }
 
-    const existing = await db.campaignExecutive.findUnique({
-      where: { campaignId_executiveId: { campaignId, executiveId } },
-    });
+    const existing = await db.prepare(
+      `SELECT * FROM CampaignExecutive WHERE campaignId = ? AND executiveId = ?`
+    ).bind(campaignId, executiveId).first() as Record<string, unknown> | null;
     if (!existing) {
       return fail("الإسناد غير موجود لهذه الحملة.", 404);
     }
 
-    // For active campaigns: check if the executive has responses for this
-    // campaign. If so, soft-disable instead of hard-deleting.
+    // For active campaigns: check responses
     if (campaign.status === "active") {
-      const responsesCount = await db.response.count({
-        where: { campaignId, executiveId },
-      });
+      const respCount = await db.prepare(
+        `SELECT COUNT(*) AS cnt FROM Response WHERE campaignId = ? AND executiveId = ?`
+      ).bind(campaignId, executiveId).first() as Record<string, unknown>;
 
-      if (responsesCount > 0) {
-        const updated = await db.campaignExecutive.update({
-          where: { campaignId_executiveId: { campaignId, executiveId } },
-          data: { isEnabled: false },
-        });
+      if ((respCount.cnt as number) > 0) {
+        await db.prepare(
+          `UPDATE CampaignExecutive SET isEnabled = 0, updatedAt = datetime('now') WHERE campaignId = ? AND executiveId = ?`
+        ).bind(campaignId, executiveId).run();
 
         await writeAudit({
           adminUserId: admin.adminId,
@@ -199,33 +185,27 @@ export const DELETE = apiHandler(
           metadata: {
             previousIsEnabled: existing.isEnabled,
             newIsEnabled: false,
-            responsesCount,
+            responsesCount: respCount.cnt,
             reason: "executive_has_responses_in_active_campaign",
           },
         });
 
-        // The Arabic message instructs the admin what happened. We return
-        // ok:true with the message because the soft-disable actually
-        // succeeded; the UI surfaces the message as a friendly notice.
         return ok({
           campaignId,
           executiveId,
           removed: false,
           mode: "soft",
-          isEnabled: updated.isEnabled,
-          responsesCount,
+          isEnabled: false,
+          responsesCount: respCount.cnt,
           message: MESSAGES.removeExecutiveFromActiveWithHistory,
         });
       }
     }
 
-    // Draft/scheduled campaigns OR active campaign with no responses:
-    // hard-delete the assignment row. (Responses, if any, still reference
-    // `executiveId` directly — but we just confirmed there are none in the
-    // active-with-responses case.)
-    await db.campaignExecutive.delete({
-      where: { campaignId_executiveId: { campaignId, executiveId } },
-    });
+    // Hard delete
+    await db.prepare(
+      `DELETE FROM CampaignExecutive WHERE campaignId = ? AND executiveId = ?`
+    ).bind(campaignId, executiveId).run();
 
     await writeAudit({
       adminUserId: admin.adminId,

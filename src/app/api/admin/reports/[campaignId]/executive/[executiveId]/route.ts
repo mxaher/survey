@@ -1,17 +1,11 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
 import { FAVORABLE_VALUES, LEADERSHIP_DIMENSIONS } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
-
-interface ExecResponseRow {
-  questionSnapshotId: string;
-  selectedValue: string;
-  selectedScore: number | null;
-}
 
 const DIM_LABEL_AR: Record<string, string> = Object.fromEntries(
   LEADERSHIP_DIMENSIONS.map((d) => [d.key, d.labelAr])
@@ -24,23 +18,13 @@ const DIM_LABEL_AR: Record<string, string> = Object.fromEntries(
  *
  * Returns:
  *   - evaluationCount: distinct responseGroupId (campaign + exec)
- *   - questions: per-snapshot { snapshotId, questionCode, questionAr,
- *       dimension, count, validCount, averageScore, distribution,
- *       favorableRate, notApplicableCount }
- *   - dimensions: [{ dimension, dimensionLabelAr, averageScore,
- *       questionCount }]
- *   - strength: { dimension, dimensionLabelAr, averageScore } | null
- *   - improvement: { dimension, dimensionLabelAr, averageScore } | null
- *   - orgWideComparison: {
- *       totalResponses, suppressed,
- *       dimensions: [{ dimension, dimensionLabelAr, averageScore }]
- *     }
+ *   - questions: per-snapshot aggregates
+ *   - dimensions: per-dimension rollup
+ *   - strength / improvement
+ *   - orgWideComparison
  *
- * Threshold suppression (spec §13.6): if evaluationCount <
- * `minimumReportingThreshold`, return `{ suppressed: true, message }`
- * and nothing else.
- *
- * NEVER exposes raw Response rows or any employee identifier.
+ * Threshold suppression: if evaluationCount < minimumReportingThreshold,
+ * return { suppressed: true } and nothing else.
  */
 export const GET = apiHandler(
   async (
@@ -53,71 +37,68 @@ export const GET = apiHandler(
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
     const { campaignId, executiveId } = await ctx.params;
+    const db = getDB();
 
     const [campaign, executive] = await Promise.all([
-      db.campaign.findUnique({
-        where: { id: campaignId },
-        select: {
-          id: true,
-          titleAr: true,
-          status: true,
-          minimumReportingThreshold: true,
-        },
-      }),
-      db.executive.findUnique({
-        where: { id: executiveId },
-        select: {
-          id: true,
-          nameAr: true,
-          titleAr: true,
-          category: true,
-          departmentAr: true,
-        },
-      }),
+      db.prepare(
+        `SELECT id, titleAr, status, minimumReportingThreshold
+         FROM Campaign WHERE id = ?`
+      ).bind(campaignId).first() as Promise<Record<string, unknown> | null>,
+      db.prepare(
+        `SELECT id, nameAr, titleAr, category, departmentAr
+         FROM Executive WHERE id = ?`
+      ).bind(executiveId).first() as Promise<Record<string, unknown> | null>,
     ]);
 
     if (!campaign) return fail("الحملة غير موجودة.", 404);
     if (!executive) return fail("المسؤول غير موجود.", 404);
 
-    const threshold = campaign.minimumReportingThreshold;
+    const threshold = campaign.minimumReportingThreshold as number;
 
-    // Pull the leadership snapshots (with options) + this exec's
-    // responses + the org-wide exec responses (for comparison).
-    const [snapshots, execResponses, orgResponses] = await Promise.all([
-      db.campaignQuestionSnapshot.findMany({
-        where: { campaignId, section: "leadership" },
-        include: { options: true },
-        orderBy: { displayOrder: "asc" },
-      }),
-      db.response.findMany({
-        where: {
-          campaignId,
-          executiveId,
-          responseType: "executive",
-        },
-        select: {
-          questionSnapshotId: true,
-          responseGroupId: true,
-          selectedValue: true,
-          selectedScore: true,
-        },
-      }),
-      db.response.findMany({
-        where: { campaignId, responseType: "executive" },
-        select: {
-          questionSnapshotId: true,
-          selectedValue: true,
-          selectedScore: true,
-        },
-      }),
+    // Pull snapshots + options + this exec's responses + org-wide responses
+    const [snapshotsResult, execResponsesResult, orgResponsesResult, optionsResult] = await Promise.all([
+      db.prepare(
+        `SELECT id, questionCode, questionAr, section, dimension, displayOrder
+         FROM CampaignQuestionSnapshot
+         WHERE campaignId = ? AND section = 'leadership'
+         ORDER BY displayOrder ASC`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT questionSnapshotId, responseGroupId, selectedValue, selectedScore
+         FROM Response
+         WHERE campaignId = ? AND executiveId = ? AND responseType = 'executive'`
+      ).bind(campaignId, executiveId).all(),
+      db.prepare(
+        `SELECT questionSnapshotId, selectedValue, selectedScore
+         FROM Response
+         WHERE campaignId = ? AND responseType = 'executive'`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT cos.id AS snapshotId, cos.value, cos.labelAr, cos.displayOrder
+         FROM CampaignQuestionOptionSnapshot cos
+         JOIN CampaignQuestionSnapshot cs ON cs.id = cos.campaignQuestionSnapshotId
+         WHERE cs.campaignId = ? AND cs.section = 'leadership'
+         ORDER BY cos.displayOrder ASC`
+      ).bind(campaignId).all(),
     ]);
 
-    // Number of distinct evaluations (responseGroupId).
-    const evalGroupIds = new Set(execResponses.map((r) => r.responseGroupId));
+    const snapshots = snapshotsResult.results as Record<string, unknown>[];
+    const execResponses = execResponsesResult.results as Record<string, unknown>[];
+    const orgResponses = orgResponsesResult.results as Record<string, unknown>[];
+    const allOptions = optionsResult.results as Record<string, unknown>[];
+
+    const optionsBySnapshot = new Map<string, Record<string, unknown>[]>();
+    for (const opt of allOptions) {
+      const snapId = opt.snapshotId as string;
+      if (!optionsBySnapshot.has(snapId)) optionsBySnapshot.set(snapId, []);
+      optionsBySnapshot.get(snapId)!.push(opt);
+    }
+
+    // Number of distinct evaluations (responseGroupId)
+    const evalGroupIds = new Set(execResponses.map((r) => r.responseGroupId as string));
     const evaluationCount = evalGroupIds.size;
 
-    // Threshold suppression — return BEFORE exposing any per-question
-    // aggregates so we can't leak a small number of responses.
+    // Threshold suppression
     if (evaluationCount < threshold) {
       return ok({
         suppressed: true,
@@ -142,12 +123,13 @@ export const GET = apiHandler(
       });
     }
 
-    // Per-question aggregates for this exec.
-    const bySnapshot = new Map<string, ExecResponseRow[]>();
+    // Per-question aggregates for this exec
+    const bySnapshot = new Map<string, Record<string, unknown>[]>();
     for (const r of execResponses) {
-      const arr = bySnapshot.get(r.questionSnapshotId) ?? [];
+      const snapId = r.questionSnapshotId as string;
+      const arr = bySnapshot.get(snapId) ?? [];
       arr.push(r);
-      bySnapshot.set(r.questionSnapshotId, arr);
+      bySnapshot.set(snapId, arr);
     }
 
     const questionAverages = new Map<
@@ -156,17 +138,18 @@ export const GET = apiHandler(
     >();
 
     const questions = snapshots.map((snap) => {
-      const rows = bySnapshot.get(snap.id) ?? [];
+      const snapId = snap.id as string;
+      const rows = bySnapshot.get(snapId) ?? [];
       const count = rows.length;
       const validRows = rows.filter((r) => r.selectedScore !== null);
       const validCount = validRows.length;
       const sumScore = validRows.reduce(
-        (acc, r) => acc + (r.selectedScore ?? 0),
+        (acc, r) => acc + ((r.selectedScore as number) ?? 0),
         0
       );
       const averageScore = validCount > 0 ? sumScore / validCount : null;
       const favorableCount = rows.filter((r) =>
-        FAVORABLE_VALUES.has(r.selectedValue)
+        FAVORABLE_VALUES.has(r.selectedValue as string)
       ).length;
       const favorableRate =
         validCount > 0 ? favorableCount / validCount : null;
@@ -174,30 +157,24 @@ export const GET = apiHandler(
         (r) => r.selectedValue === "not_applicable"
       ).length;
 
-      // Per-question threshold suppression: if this individual question has
-      // fewer responses than the campaign threshold (e.g., because some
-      // evaluators skipped it or marked N/A and the question is one of the
-      // few with a lower response rate), mask the detailed numbers. The
-      // question text + raw count are still returned so the UI can show
-      // "أقل من حد الإخفاء" without leaking the distribution.
       const perQuestionSuppressed = count < threshold;
 
       const optionBuckets = new Map<string, number>();
       for (const r of rows) {
-        optionBuckets.set(
-          r.selectedValue,
-          (optionBuckets.get(r.selectedValue) ?? 0) + 1
-        );
+        const val = r.selectedValue as string;
+        optionBuckets.set(val, (optionBuckets.get(val) ?? 0) + 1);
       }
-      const distribution = snap.options
+
+      const snapOpts = (optionsBySnapshot.get(snapId) ?? [])
         .slice()
-        .sort((a, b) => a.displayOrder - b.displayOrder)
-        .map((opt) => ({
-          value: opt.value,
-          labelAr: opt.labelAr,
-          count: perQuestionSuppressed ? 0 : (optionBuckets.get(opt.value) ?? 0),
-        }));
-      const knownValues = new Set(snap.options.map((o) => o.value));
+        .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number));
+
+      const distribution = snapOpts.map((opt) => ({
+        value: opt.value as string,
+        labelAr: opt.labelAr as string,
+        count: perQuestionSuppressed ? 0 : (optionBuckets.get(opt.value as string) ?? 0),
+      }));
+      const knownValues = new Set(snapOpts.map((o) => o.value as string));
       for (const [value, c] of optionBuckets) {
         if (!knownValues.has(value)) {
           distribution.push({
@@ -208,15 +185,14 @@ export const GET = apiHandler(
         }
       }
 
-      questionAverages.set(snap.id, {
-        snapshotId: snap.id,
-        dimension: snap.dimension,
-        // Only contribute to the dimension rollup if not suppressed.
+      questionAverages.set(snapId, {
+        snapshotId: snapId,
+        dimension: snap.dimension as string | null,
         averageScore: perQuestionSuppressed ? null : averageScore,
       });
 
       return {
-        snapshotId: snap.id,
+        snapshotId: snapId,
         questionCode: snap.questionCode,
         questionAr: snap.questionAr,
         dimension: snap.dimension,
@@ -230,14 +206,8 @@ export const GET = apiHandler(
       };
     });
 
-    // Per-dimension rollups: average of the per-question averages for
-    // questions in that dimension. Questions with `averageScore === null`
-    // (e.g., no valid responses, or a multi-choice question with no
-    // score) are excluded from the rollup denominator.
-    const dimBucket = new Map<
-      string,
-      { sum: number; count: number }
-    >();
+    // Per-dimension rollups
+    const dimBucket = new Map<string, { sum: number; count: number }>();
     for (const q of questionAverages.values()) {
       if (!q.dimension || q.averageScore === null) continue;
       const cur = dimBucket.get(q.dimension) ?? { sum: 0, count: 0 };
@@ -259,7 +229,7 @@ export const GET = apiHandler(
       questionCount: number;
     }>;
 
-    // Strength (highest) & improvement (lowest) by dimension score.
+    // Strength & improvement
     let strength: {
       dimension: string;
       dimensionLabelAr: string;
@@ -278,33 +248,31 @@ export const GET = apiHandler(
       improvement = sorted[sorted.length - 1];
     }
 
-    // Organization-wide comparison: aggregate across ALL execs for this
-    // campaign, compute per-dimension averages the same way.
-    const orgBySnapshot = new Map<string, ExecResponseRow[]>();
+    // Organization-wide comparison
+    const orgBySnapshot = new Map<string, Record<string, unknown>[]>();
     for (const r of orgResponses) {
-      const arr = orgBySnapshot.get(r.questionSnapshotId) ?? [];
+      const snapId = r.questionSnapshotId as string;
+      const arr = orgBySnapshot.get(snapId) ?? [];
       arr.push(r);
-      orgBySnapshot.set(r.questionSnapshotId, arr);
+      orgBySnapshot.set(snapId, arr);
     }
 
-    const orgDimBucket = new Map<
-      string,
-      { sum: number; count: number }
-    >();
+    const orgDimBucket = new Map<string, { sum: number; count: number }>();
     for (const snap of snapshots) {
-      const rows = orgBySnapshot.get(snap.id) ?? [];
+      const snapId = snap.id as string;
+      const rows = orgBySnapshot.get(snapId) ?? [];
       const validRows = rows.filter((r) => r.selectedScore !== null);
       const validCount = validRows.length;
       const sumScore = validRows.reduce(
-        (acc, r) => acc + (r.selectedScore ?? 0),
+        (acc, r) => acc + ((r.selectedScore as number) ?? 0),
         0
       );
       const qAvg = validCount > 0 ? sumScore / validCount : null;
       if (!snap.dimension || qAvg === null) continue;
-      const cur = orgDimBucket.get(snap.dimension) ?? { sum: 0, count: 0 };
+      const cur = orgDimBucket.get(snap.dimension as string) ?? { sum: 0, count: 0 };
       cur.sum += qAvg;
       cur.count += 1;
-      orgDimBucket.set(snap.dimension, cur);
+      orgDimBucket.set(snap.dimension as string, cur);
     }
     const orgDimensions = Array.from(orgDimBucket.entries())
       .map(([dimension, v]) => ({

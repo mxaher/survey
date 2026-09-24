@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -30,8 +30,12 @@ export const GET = apiHandler(
     const { admin, deny } = await requireSuperAdmin();
     if (deny || !admin) return deny;
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const user = await db.adminUser.findUnique({ where: { id } });
+    const user = await db
+      .prepare("SELECT * FROM AdminUser WHERE id = ?")
+      .bind(id)
+      .first();
     if (!user) return fail("المستخدم غير موجود.", 404);
 
     return ok({
@@ -69,6 +73,7 @@ export const PATCH = apiHandler(
     const { admin, deny } = await requireSuperAdmin();
     if (deny || !admin) return deny;
 
+    const db = getDB();
     const { id } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -81,27 +86,45 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data;
 
-    const existing = await db.adminUser.findUnique({ where: { id } });
+    const existing = await db
+      .prepare("SELECT * FROM AdminUser WHERE id = ?")
+      .bind(id)
+      .first();
     if (!existing) return fail("المستخدم غير موجود.", 404);
 
     // Build the update payload, skipping undefined fields.
-    const data: Record<string, unknown> = {};
+    const updates: string[] = [];
+    const bindValues: unknown[] = [];
     for (const [k, v] of Object.entries(input)) {
-      if (v !== undefined) data[k] = v;
+      if (v !== undefined) {
+        updates.push(`${k} = ?`);
+        bindValues.push(v);
+      }
     }
 
-    const updated = await db.adminUser.update({
-      where: { id },
-      data: data as Parameters<typeof db.adminUser.update>[0]["data"],
-    });
+    if (updates.length === 0) return fail("صيغة الطلب غير صالحة.", 400);
+
+    updates.push("updatedAt = datetime('now')");
+    bindValues.push(id);
+
+    await db
+      .prepare(`UPDATE AdminUser SET ${updates.join(", ")} WHERE id = ?`)
+      .bind(...bindValues)
+      .run();
+
+    // Re-read for audit comparison and response
+    const updated = await db
+      .prepare("SELECT * FROM AdminUser WHERE id = ?")
+      .bind(id)
+      .first();
 
     await writeAudit({
       adminUserId: admin.adminId,
       action: "admin_user.update",
       entityType: "admin_user",
-      entityId: updated.id,
+      entityId: id,
       metadata: {
-        fields: Object.keys(data),
+        fields: Object.keys(input),
         previousRole: existing.role,
         newRole: updated.role,
         previousIsActive: existing.isActive,
@@ -132,8 +155,12 @@ export const DELETE = apiHandler(
     const { admin, deny } = await requireSuperAdmin();
     if (deny || !admin) return deny;
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const existing = await db.adminUser.findUnique({ where: { id } });
+    const existing = await db
+      .prepare("SELECT * FROM AdminUser WHERE id = ?")
+      .bind(id)
+      .first();
     if (!existing) return fail("المستخدم غير موجود.", 404);
 
     // Prevent a SUPER_ADMIN from deactivating themselves (lockout guard).
@@ -152,16 +179,18 @@ export const DELETE = apiHandler(
       });
     }
 
-    const updated = await db.adminUser.update({
-      where: { id },
-      data: { isActive: false },
-    });
+    await db
+      .prepare(
+        "UPDATE AdminUser SET isActive = 0, updatedAt = datetime('now') WHERE id = ?"
+      )
+      .bind(id)
+      .run();
 
     await writeAudit({
       adminUserId: admin.adminId,
       action: "admin_user.deactivate",
       entityType: "admin_user",
-      entityId: updated.id,
+      entityId: id,
       metadata: {
         externalId: existing.externalId,
         previousRole: existing.role,
@@ -169,8 +198,8 @@ export const DELETE = apiHandler(
     });
 
     return ok({
-      id: updated.id,
-      externalId: updated.externalId,
+      id,
+      externalId: existing.externalId,
       isActive: false,
       deactivated: true,
     });

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -17,23 +17,20 @@ export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
-  const campaigns = await db.campaign.findMany({
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: {
-        select: {
-          executives: true,
-          questionConfig: true,
-          responses: true,
-          participationLedger: true,
-          questionSnapshots: true,
-        },
-      },
-    },
-  });
+  const db = getDB();
+
+  const campaigns = await db.prepare(`
+    SELECT c.*,
+      (SELECT COUNT(*) FROM CampaignExecutive WHERE campaignId = c.id) AS execCount,
+      (SELECT COUNT(*) FROM CampaignQuestionConfig WHERE campaignId = c.id) AS qConfigCount,
+      (SELECT COUNT(*) FROM Response WHERE campaignId = c.id) AS responseCount,
+      (SELECT COUNT(*) FROM ParticipationLedger WHERE campaignId = c.id) AS ledgerCount,
+      (SELECT COUNT(*) FROM CampaignQuestionSnapshot WHERE campaignId = c.id) AS snapshotCount
+    FROM Campaign c ORDER BY c.createdAt DESC
+  `).all();
 
   return ok(
-    campaigns.map((c) => ({
+    campaigns.results.map((c: Record<string, unknown>) => ({
       id: c.id,
       titleAr: c.titleAr,
       descriptionAr: c.descriptionAr,
@@ -53,11 +50,11 @@ export const GET = apiHandler(async () => {
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       counts: {
-        executives: c._count.executives,
-        questions: c._count.questionConfig,
-        responses: c._count.responses,
-        participationLedger: c._count.participationLedger,
-        questionSnapshots: c._count.questionSnapshots,
+        executives: c.execCount,
+        questions: c.qConfigCount,
+        responses: c.responseCount,
+        participationLedger: c.ledgerCount,
+        questionSnapshots: c.snapshotCount,
       },
     }))
   );
@@ -66,8 +63,6 @@ export const GET = apiHandler(async () => {
 /**
  * POST /api/admin/campaigns
  * Create a new draft campaign. Required: titleAr (non-empty).
- * Optional: startsAt/endsAt (endsAt must be after startsAt if both set),
- * minimumReportingThreshold ≥ 1 (default 5), all toggles default per schema.
  */
 const createSchema = z
   .object({
@@ -129,46 +124,56 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const input = parsed.data;
 
-  const created = await db.campaign.create({
-    data: {
-      titleAr: input.titleAr,
-      descriptionAr: input.descriptionAr ?? null,
-      instructionsAr: input.instructionsAr ?? null,
-      status: "draft",
-      startsAt: input.startsAt ?? null,
-      endsAt: input.endsAt ?? null,
-      timezone: input.timezone,
-      minimumReportingThreshold: input.minimumReportingThreshold,
-      enableEnvironmentSurvey: input.enableEnvironmentSurvey,
-      enableFutureSurvey: input.enableFutureSurvey,
-      allowMultipleExecutiveEvaluations:
-        input.allowMultipleExecutiveEvaluations,
-      minExecutives: input.minExecutives ?? null,
-      maxExecutives: input.maxExecutives ?? null,
-      allowResume: input.allowResume,
-      privacyNoticeAr: input.privacyNoticeAr ?? null,
-      createdBy: admin.adminId,
-    },
-  });
+  const db = getDB();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await db.prepare(
+    `INSERT INTO Campaign
+      (id, titleAr, descriptionAr, instructionsAr, status, startsAt, endsAt,
+       timezone, minimumReportingThreshold, enableEnvironmentSurvey, enableFutureSurvey,
+       allowMultipleExecutiveEvaluations, minExecutives, maxExecutives, allowResume,
+       privacyNoticeAr, createdBy, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.titleAr,
+    input.descriptionAr ?? null,
+    input.instructionsAr ?? null,
+    input.startsAt ? input.startsAt.toISOString() : null,
+    input.endsAt ? input.endsAt.toISOString() : null,
+    input.timezone,
+    input.minimumReportingThreshold,
+    input.enableEnvironmentSurvey ? 1 : 0,
+    input.enableFutureSurvey ? 1 : 0,
+    input.allowMultipleExecutiveEvaluations ? 1 : 0,
+    input.minExecutives ?? null,
+    input.maxExecutives ?? null,
+    input.allowResume ? 1 : 0,
+    input.privacyNoticeAr ?? null,
+    admin.adminId,
+    now,
+    now
+  ).run();
 
   await writeAudit({
     adminUserId: admin.adminId,
     action: "campaign.create",
     entityType: "campaign",
-    entityId: created.id,
-    campaignId: created.id,
+    entityId: id,
+    campaignId: id,
     metadata: {
-      titleAr: created.titleAr,
-      status: created.status,
+      titleAr: input.titleAr,
+      status: "draft",
     },
   });
 
   return ok(
     {
-      id: created.id,
-      titleAr: created.titleAr,
-      status: created.status,
-      createdAt: created.createdAt,
+      id,
+      titleAr: input.titleAr,
+      status: "draft",
+      createdAt: now,
     },
     { status: 201 }
   );

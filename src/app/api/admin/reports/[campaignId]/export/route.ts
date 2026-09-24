@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -32,7 +32,6 @@ const CSV_HEADERS = [
   "لا ينطبق",
 ];
 
-// Count columns in fixed order — the last 6 headers map to these values.
 const SCALE_VALUE_ORDER = [
   "always",
   "often",
@@ -42,9 +41,6 @@ const SCALE_VALUE_ORDER = [
   "not_applicable",
 ] as const;
 
-/** RFC-4180 CSV field escaping. Wraps in quotes if it contains a
- * comma, double-quote, newline, or leading/trailing whitespace; doubles
- * any internal double-quotes. */
 function csvField(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "";
   const s = String(value);
@@ -60,7 +56,6 @@ function buildCsvRow(
   return fields.map(csvField).join(",");
 }
 
-/** Row aggregate computed once per (executive × leadership question). */
 interface RowAggregate {
   campaignTitle: string;
   execName: string;
@@ -73,58 +68,66 @@ interface RowAggregate {
   scaleCounts: number[];
 }
 
-/**
- * Shared aggregation for both CSV and XLSX exports.
- * - Respects the per-campaign `minimumReportingThreshold` (executives
- *   below the threshold are skipped entirely).
- * - Returns aggregate numbers only — no employee identity, no
- *   `employeeHmac`, no participation-ledger data.
- */
 async function computeExportRows(campaignId: string): Promise<{
   rows: RowAggregate[];
   threshold: number;
   campaignTitle: string;
 }> {
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    select: {
-      id: true,
-      titleAr: true,
-      minimumReportingThreshold: true,
-    },
-  });
+  const db = getDB();
+
+  const campaign = await db.prepare(
+    `SELECT id, titleAr, minimumReportingThreshold FROM Campaign WHERE id = ?`
+  ).bind(campaignId).first() as Record<string, unknown> | null;
   if (!campaign) {
     return { rows: [], threshold: 0, campaignTitle: "" };
   }
-  const threshold = campaign.minimumReportingThreshold;
+  const threshold = campaign.minimumReportingThreshold as number;
 
-  const [snapshots, campaignExecs] = await Promise.all([
-    db.campaignQuestionSnapshot.findMany({
-      where: { campaignId, section: "leadership" },
-      include: { options: true },
-      orderBy: { displayOrder: "asc" },
-    }),
-    db.campaignExecutive.findMany({
-      where: { campaignId, isEnabled: true },
-      include: { executive: true },
-      orderBy: { displayOrder: "asc" },
-    }),
+  const [snapshotsResult, campaignExecsResult, optionsResult] = await Promise.all([
+    db.prepare(
+      `SELECT id, questionAr, dimension, displayOrder
+       FROM CampaignQuestionSnapshot
+       WHERE campaignId = ? AND section = 'leadership'
+       ORDER BY displayOrder ASC`
+    ).bind(campaignId).all(),
+    db.prepare(
+      `SELECT ce.campaignId, ce.executiveId, ce.displayOrder, ce.isEnabled,
+              e.id AS eId, e.nameAr, e.titleAr, e.category, e.departmentAr, e.isActive, e.deletedAt
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ? AND ce.isEnabled = 1
+       ORDER BY ce.displayOrder ASC`
+    ).bind(campaignId).all(),
+    db.prepare(
+      `SELECT cos.id AS snapshotId, cos.value, cos.labelAr, cos.displayOrder
+       FROM CampaignQuestionOptionSnapshot cos
+       JOIN CampaignQuestionSnapshot cs ON cs.id = cos.campaignQuestionSnapshotId
+       WHERE cs.campaignId = ? AND cs.section = 'leadership'
+       ORDER BY cos.displayOrder ASC`
+    ).bind(campaignId).all(),
   ]);
 
+  const snapshots = snapshotsResult.results as Record<string, unknown>[];
+  const campaignExecs = campaignExecsResult.results as Record<string, unknown>[];
+  const allOptions = optionsResult.results as Record<string, unknown>[];
+
+  const optionsBySnapshot = new Map<string, Record<string, unknown>[]>();
+  for (const opt of allOptions) {
+    const snapId = opt.snapshotId as string;
+    if (!optionsBySnapshot.has(snapId)) optionsBySnapshot.set(snapId, []);
+    optionsBySnapshot.get(snapId)!.push(opt);
+  }
+
   const activeExecs = campaignExecs.filter(
-    (ce) => ce.executive?.isActive && ce.executive?.deletedAt === null
+    (ce) => ce.isActive && ce.deletedAt === null
   );
 
-  const allExecResponses = await db.response.findMany({
-    where: { campaignId, responseType: "executive" },
-    select: {
-      executiveId: true,
-      responseGroupId: true,
-      questionSnapshotId: true,
-      selectedValue: true,
-      selectedScore: true,
-    },
-  });
+  const execResponsesResult = await db.prepare(
+    `SELECT executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore
+     FROM Response
+     WHERE campaignId = ? AND responseType = 'executive'`
+  ).bind(campaignId).all();
+  const allExecResponses = execResponsesResult.results as Record<string, unknown>[];
 
   const evalGroupIdsByExec = new Map<string, Set<string>>();
   const responsesByPair = new Map<
@@ -133,17 +136,17 @@ async function computeExportRows(campaignId: string): Promise<{
   >();
 
   for (const r of allExecResponses) {
-    const execId = r.executiveId ?? "";
+    const execId = (r.executiveId as string) ?? "";
     if (!evalGroupIdsByExec.has(execId)) {
       evalGroupIdsByExec.set(execId, new Set());
     }
-    evalGroupIdsByExec.get(execId)!.add(r.responseGroupId);
+    evalGroupIdsByExec.get(execId)!.add(r.responseGroupId as string);
 
     const key = `${execId}::${r.questionSnapshotId}`;
     const arr = responsesByPair.get(key) ?? [];
     arr.push({
-      selectedValue: r.selectedValue,
-      selectedScore: r.selectedScore,
+      selectedValue: r.selectedValue as string,
+      selectedScore: r.selectedScore as number | null,
     });
     responsesByPair.set(key, arr);
   }
@@ -151,12 +154,13 @@ async function computeExportRows(campaignId: string): Promise<{
   const rows: RowAggregate[] = [];
 
   for (const ce of activeExecs) {
-    const exec = ce.executive;
-    const evalCount = evalGroupIdsByExec.get(exec.id)?.size ?? 0;
+    const execId = ce.executiveId as string;
+    const evalCount = evalGroupIdsByExec.get(execId)?.size ?? 0;
     if (evalCount < threshold) continue;
 
     for (const snap of snapshots) {
-      const key = `${exec.id}::${snap.id}`;
+      const snapId = snap.id as string;
+      const key = `${execId}::${snapId}`;
       const rowsForPair = responsesByPair.get(key) ?? [];
       const count = rowsForPair.length;
       const validRows = rowsForPair.filter((r) => r.selectedScore !== null);
@@ -186,7 +190,7 @@ async function computeExportRows(campaignId: string): Promise<{
       }
 
       const dimensionLabel = snap.dimension
-        ? DIM_LABEL_AR[snap.dimension] ?? snap.dimension
+        ? DIM_LABEL_AR[snap.dimension as string] ?? (snap.dimension as string)
         : "";
 
       const scaleCounts = SCALE_VALUE_ORDER.map(
@@ -194,11 +198,11 @@ async function computeExportRows(campaignId: string): Promise<{
       );
 
       rows.push({
-        campaignTitle: campaign.titleAr,
-        execName: exec.nameAr,
-        execDepartment: exec.departmentAr ?? "",
+        campaignTitle: campaign.titleAr as string,
+        execName: ce.nameAr as string,
+        execDepartment: (ce.departmentAr as string) ?? "",
         dimensionLabel,
-        questionText: snap.questionAr,
+        questionText: snap.questionAr as string,
         count,
         averageScore,
         favorableRate,
@@ -207,10 +211,9 @@ async function computeExportRows(campaignId: string): Promise<{
     }
   }
 
-  return { rows, threshold, campaignTitle: campaign.titleAr };
+  return { rows, threshold, campaignTitle: campaign.titleAr as string };
 }
 
-/** Build the UTF-8-BOM CSV body (Excel-compatible, CRLF). */
 function buildCsv(rows: RowAggregate[]): string {
   const lines: string[] = [buildCsvRow(CSV_HEADERS)];
   for (const r of rows) {
@@ -231,24 +234,12 @@ function buildCsv(rows: RowAggregate[]): string {
   return `\uFEFF${lines.join("\r\n")}\r\n`;
 }
 
-/**
- * Build an XLSX workbook with two sheets:
- *  - "ملخص الأبعاد" — per (executive × dimension) rollup averages.
- *  - "تفصيل الأسئلة" — per (executive × question) full breakdown.
- *
- * Returns a Node Buffer (xlsx writes to a buffer when `type: "buffer"`
- * is passed). Arabic strings are preserved as UTF-8 inside the XLSX
- * XML, so no BOM is needed (unlike CSV).
- */
 async function buildXlsx(
   rows: RowAggregate[],
   meta: { campaignTitle: string; threshold: number }
 ): Promise<Buffer> {
-  // Dynamic import so the dependency is only loaded when XLSX is actually
-  // requested (CSV path stays light).
   const XLSX = await import("xlsx");
 
-  // Sheet 1: per-question detail (mirrors the CSV).
   const detailData = rows.map((r) => ({
     "اسم الحملة": r.campaignTitle,
     "اسم المسؤول": r.execName,
@@ -268,23 +259,21 @@ async function buildXlsx(
   const wsDetail = XLSX.utils.json_to_sheet(detailData, {
     header: CSV_HEADERS,
   });
-  // Set RTL view + column widths for readability.
   wsDetail["!cols"] = [
-    { wch: 32 }, // campaign
-    { wch: 22 }, // exec name
-    { wch: 18 }, // department
-    { wch: 18 }, // dimension
-    { wch: 50 }, // question
-    { wch: 12 }, // count
-    { wch: 10 }, // avg
-    { wch: 18 }, // favorable
+    { wch: 32 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 50 },
+    { wch: 12 },
+    { wch: 10 },
+    { wch: 18 },
     { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 },
   ];
   wsDetail["!margins"] = { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 };
 
-  // Sheet 2: per-dimension rollup per executive.
   const dimRollup = new Map<
-    string, // `${execName}::${dimensionLabel}`
+    string,
     { execName: string; department: string; dimension: string; sum: number; valid: number; total: number; favorable: number; favorableValid: number }
   >();
   for (const r of rows) {
@@ -302,7 +291,6 @@ async function buildXlsx(
       };
     cur.total += r.count;
     if (r.averageScore != null && r.count > 0) {
-      // weighted by count so dimensions with more responses weigh correctly
       cur.sum += r.averageScore * r.count;
       cur.valid += r.count;
     }
@@ -335,7 +323,6 @@ async function buildXlsx(
   ];
 
   const wb = XLSX.utils.book_new();
-  // Mark the workbook as RTL (Excel will respect this for sheet view).
   (wb as unknown as { Views?: unknown[] }).Views = [{ RTL: true }];
   XLSX.utils.book_append_sheet(wb, wsSummary, "ملخص الأبعاد");
   XLSX.utils.book_append_sheet(wb, wsDetail, "تفصيل الأسئلة");
@@ -346,8 +333,6 @@ async function buildXlsx(
     compression: true,
   }) as Buffer;
 
-  // Reference meta to satisfy TS (campaignTitle/threshold are used in audit
-  // outside this function; we keep them in the signature for future use).
   void meta;
 
   return buf;
@@ -357,15 +342,6 @@ async function buildXlsx(
  * GET /api/admin/reports/[campaignId]/export?format=csv|xlsx
  *
  * Exports the per-executive leadership question aggregates.
- *
- * - `csv`  → UTF-8 with BOM (Excel-compatible), CRLF line endings.
- * - `xlsx` → Two-sheet workbook (summary + detail), RTL view.
- *
- * One row per (executive × leadership question). Executives whose
- * evaluation count is below `minimumReportingThreshold` are skipped
- * entirely. Aggregate numbers only — no employee identity, no
- * `employeeHmac`, no participation-ledger data.
- *
  * Auth required (both roles). Audited as `report.export`.
  */
 export const GET = apiHandler(
@@ -410,7 +386,6 @@ export const GET = apiHandler(
       });
     }
 
-    // format === "xlsx"
     const buf = await buildXlsx(rows, { campaignTitle, threshold });
     return new NextResponse(new Uint8Array(buf), {
       status: 200,

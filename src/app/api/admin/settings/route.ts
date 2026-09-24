@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -16,12 +16,14 @@ export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
-  const settings = await db.systemSetting.findMany({
-    orderBy: { key: "asc" },
-  });
+  const db = getDB();
+
+  const settings = await db
+    .prepare("SELECT * FROM SystemSetting ORDER BY key ASC")
+    .all();
 
   return ok({
-    settings: settings.map((s) => ({
+    settings: (settings.results ?? []).map((s) => ({
       id: s.id,
       key: s.key,
       valueAr: s.valueAr,
@@ -44,6 +46,8 @@ export const POST = apiHandler(async (request: NextRequest) => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+  const db = getDB();
+
   const json = await request.json().catch(() => null);
   if (!json || typeof json !== "object") {
     return fail("صيغة الطلب غير صالحة.", 400);
@@ -55,18 +59,29 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const { key, valueAr } = parsed.data;
 
-  const existing = await db.systemSetting.findUnique({ where: { key } });
-  const setting = await db.systemSetting.upsert({
-    where: { key },
-    create: { key, valueAr },
-    update: { valueAr },
-  });
+  const existing = await db
+    .prepare("SELECT id FROM SystemSetting WHERE key = ?")
+    .bind(key)
+    .first();
+
+  const id = existing?.id ?? crypto.randomUUID();
+  await db
+    .prepare(
+      "INSERT INTO SystemSetting (id, key, valueAr, updatedAt) VALUES (?, ?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET valueAr = ?, updatedAt = datetime('now')"
+    )
+    .bind(id, key, valueAr, valueAr)
+    .run();
+
+  const setting = await db
+    .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+    .bind(key)
+    .first();
 
   await writeAudit({
     adminUserId: admin.adminId,
     action: "settings.update",
     entityType: "system_setting",
-    entityId: setting.id,
+    entityId: id,
     metadata: {
       key,
       created: !existing,

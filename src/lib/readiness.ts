@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { MESSAGES } from "@/lib/messages";
 
 /**
@@ -42,17 +42,11 @@ export interface ReadinessResult {
 export async function checkReadiness(
   campaignId: string
 ): Promise<ReadinessResult> {
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    include: {
-      executives: { include: { executive: true } },
-      questionConfig: {
-        include: {
-          question: { include: { options: true } },
-        },
-      },
-    },
-  });
+  const db = getDB();
+
+  const campaign = await db.prepare(
+    `SELECT * FROM Campaign WHERE id = ?`
+  ).bind(campaignId).first() as Record<string, unknown> | null;
 
   if (!campaign) {
     return {
@@ -62,16 +56,43 @@ export async function checkReadiness(
     };
   }
 
+  // Load related data separately (D1 doesn't support Prisma-style includes)
+  const executives = await db.prepare(
+    `SELECT ce.*, e.nameAr, e.titleAr, e.category, e.departmentAr, e.isActive AS execIsActive, e.deletedAt AS execDeletedAt
+     FROM CampaignExecutive ce
+     JOIN Executive e ON e.id = ce.executiveId
+     WHERE ce.campaignId = ?`
+  ).bind(campaignId).all();
+
+  const questionConfig = await db.prepare(
+    `SELECT cqc.*, q.id AS qId, q.code AS qCode, q.questionAr AS qQuestionAr, q.questionType AS qQuestionType,
+            q.section AS qSection, q.dimension AS qDimension, q.isRequired AS qIsRequired,
+            q.displayOrder AS qDisplayOrder, q.isActive AS qIsActive, q.deletedAt AS qDeletedAt
+     FROM CampaignQuestionConfig cqc
+     JOIN Question q ON q.id = cqc.questionId
+     WHERE cqc.campaignId = ?`
+  ).bind(campaignId).all();
+
+  // Load options for each question
+  const questionIds = questionConfig.results.map((qc: Record<string, unknown>) => qc.qId as string);
+  let options: Record<string, unknown>[] = [];
+  if (questionIds.length > 0) {
+    const placeholders = questionIds.map(() => "?").join(",");
+    options = (await db.prepare(
+      `SELECT * FROM QuestionOption WHERE questionId IN (${placeholders}) ORDER BY displayOrder`
+    ).bind(...questionIds).all()).results as Record<string, unknown>[];
+  }
+
   const issues: ReadinessIssue[] = [];
 
   // 1. Title & instructions present
-  if (!campaign.titleAr || campaign.titleAr.trim() === "") {
+  if (!campaign.titleAr || (campaign.titleAr as string).trim() === "") {
     issues.push({
       key: "title_missing",
       messageAr: "يجب إدخال عنوان للحملة.",
     });
   }
-  if (!campaign.instructionsAr || campaign.instructionsAr.trim() === "") {
+  if (!campaign.instructionsAr || (campaign.instructionsAr as string).trim() === "") {
     issues.push({
       key: "instructions_missing",
       messageAr: "يجب إدخال تعليمات المشاركة قبل النشر.",
@@ -79,11 +100,11 @@ export async function checkReadiness(
   }
 
   // 2. ≥1 active assigned executive
-  const activeExecutives = campaign.executives.filter(
-    (ce) =>
+  const activeExecutives = executives.results.filter(
+    (ce: Record<string, unknown>) =>
       ce.isEnabled &&
-      ce.executive?.isActive &&
-      ce.executive?.deletedAt === null
+      ce.execIsActive &&
+      ce.execDeletedAt === null
   );
   if (activeExecutives.length === 0) {
     issues.push({
@@ -93,8 +114,8 @@ export async function checkReadiness(
   }
 
   // 3. ≥1 active assigned question
-  const activeQuestions = campaign.questionConfig.filter(
-    (qc) => qc.question?.isActive && qc.question?.deletedAt === null
+  const activeQuestions = questionConfig.results.filter(
+    (qc: Record<string, unknown>) => qc.qIsActive && qc.qDeletedAt === null
   );
   if (activeQuestions.length === 0) {
     issues.push({
@@ -105,13 +126,11 @@ export async function checkReadiness(
 
   // 4. Every assigned active question has ≥1 active option
   for (const qc of activeQuestions) {
-    const activeOptions = (qc.question.options || []).filter(
-      (o) => o.isActive
-    );
-    if (activeOptions.length === 0) {
+    const qOptions = options.filter((o) => o.questionId === qc.qId && o.isActive);
+    if (qOptions.length === 0) {
       issues.push({
-        key: `question_${qc.question.code}_no_active_options`,
-        messageAr: `السؤال "${qc.question.code}" لا يحتوي على أي خيار نشط.`,
+        key: `question_${qc.qCode}_no_active_options`,
+        messageAr: `السؤال "${qc.qCode}" لا يحتوي على أي خيار نشط.`,
       });
     }
   }
@@ -138,7 +157,7 @@ export async function checkReadiness(
   }
 
   // 7. Reporting threshold ≥ 1
-  if (!Number.isFinite(campaign.minimumReportingThreshold) || campaign.minimumReportingThreshold < 1) {
+  if (!Number.isFinite(campaign.minimumReportingThreshold as number) || (campaign.minimumReportingThreshold as number) < 1) {
     issues.push({
       key: "invalid_threshold",
       messageAr: "يجب أن يكون الحد الأدنى لعرض النتائج عدداً موجباً (1 على الأقل).",
@@ -146,7 +165,7 @@ export async function checkReadiness(
   }
 
   // 8. Duplicate executives (defensive — PK normally prevents this)
-  const execIds = campaign.executives.map((ce) => ce.executiveId);
+  const execIds = executives.results.map((ce: Record<string, unknown>) => ce.executiveId as string);
   const uniqueExecIds = new Set(execIds);
   if (uniqueExecIds.size !== execIds.length) {
     issues.push({
@@ -156,7 +175,7 @@ export async function checkReadiness(
   }
 
   // 8b. Duplicate questions (defensive)
-  const qIds = campaign.questionConfig.map((qc) => qc.questionId);
+  const qIds = questionConfig.results.map((qc: Record<string, unknown>) => qc.questionId as string);
   const uniqueQIds = new Set(qIds);
   if (uniqueQIds.size !== qIds.length) {
     issues.push({
@@ -169,7 +188,7 @@ export async function checkReadiness(
   if (
     campaign.minExecutives !== null &&
     campaign.maxExecutives !== null &&
-    campaign.minExecutives > campaign.maxExecutives
+    (campaign.minExecutives as number) > (campaign.maxExecutives as number)
   ) {
     issues.push({
       key: "min_gt_max",
@@ -181,9 +200,9 @@ export async function checkReadiness(
     ready: issues.length === 0,
     issues,
     campaign: {
-      id: campaign.id,
-      titleAr: campaign.titleAr,
-      status: campaign.status,
+      id: campaign.id as string,
+      titleAr: campaign.titleAr as string,
+      status: campaign.status as string,
     },
   };
 }

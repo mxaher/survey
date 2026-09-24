@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -17,29 +17,112 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const campaign = await db.campaign.findUnique({
-      where: { id },
-      include: {
-        executives: {
-          include: { executive: true },
-          orderBy: { displayOrder: "asc" },
-        },
-        questionConfig: {
-          include: { question: { include: { options: true } } },
-          orderBy: { displayOrder: "asc" },
-        },
-        _count: {
-          select: {
-            responses: true,
-            participationLedger: true,
-            questionSnapshots: true,
-          },
-        },
-      },
-    });
+
+    // 1. Campaign row
+    const campaign = await db.prepare(
+      `SELECT * FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
 
     if (!campaign) return fail("الحملة غير موجودة.", 404);
+
+    // 2. Executives with joined executive data
+    const executives = await db.prepare(
+      `SELECT ce.campaignId, ce.executiveId, ce.displayOrder, ce.isEnabled,
+              ce.createdAt AS ceCreatedAt, ce.updatedAt AS ceUpdatedAt,
+              e.nameAr, e.titleAr, e.category, e.departmentAr, e.isActive
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ?
+       ORDER BY ce.displayOrder ASC`
+    ).bind(id).all();
+
+    // 3. Question configs with joined question + options
+    const questionConfigs = await db.prepare(
+      `SELECT cqc.campaignId, cqc.questionId, cqc.scope, cqc.isRequired,
+              cqc.displayOrder AS qcDisplayOrder,
+              cqc.createdAt AS qcCreatedAt, cqc.updatedAt AS qcUpdatedAt,
+              q.id AS qId, q.code AS qCode, q.questionAr AS qQuestionAr,
+              q.questionType AS qQuestionType, q.section AS qSection,
+              q.dimension AS qDimension, q.isRequired AS qIsRequired,
+              q.isActive AS qIsActive, q.maxSelections AS qMaxSelections
+       FROM CampaignQuestionConfig cqc
+       JOIN Question q ON q.id = cqc.questionId
+       WHERE cqc.campaignId = ?
+       ORDER BY cqc.displayOrder ASC`
+    ).bind(id).all();
+
+    // 4. Fetch options for all questions
+    const questionIds = questionConfigs.results.map(
+      (qc: Record<string, unknown>) => qc.qId as string
+    );
+    let allOptions: Record<string, unknown>[] = [];
+    if (questionIds.length > 0) {
+      const placeholders = questionIds.map(() => "?").join(",");
+      allOptions = (await db.prepare(
+        `SELECT * FROM QuestionOption WHERE questionId IN (${placeholders})`
+      ).bind(...questionIds).all()).results as Record<string, unknown>[];
+    }
+
+    // 5. Count subqueries
+    const responseCount = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM Response WHERE campaignId = ?`
+    ).bind(id).first() as Record<string, unknown>;
+    const ledgerCount = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM ParticipationLedger WHERE campaignId = ?`
+    ).bind(id).first() as Record<string, unknown>;
+    const snapshotCount = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM CampaignQuestionSnapshot WHERE campaignId = ?`
+    ).bind(id).first() as Record<string, unknown>;
+
+    // Assemble executives
+    const execList = executives.results.map((ce: Record<string, unknown>) => ({
+      executiveId: ce.executiveId,
+      displayOrder: ce.displayOrder,
+      isEnabled: ce.isEnabled,
+      executive: {
+        id: ce.executiveId,
+        nameAr: ce.nameAr,
+        titleAr: ce.titleAr,
+        category: ce.category,
+        departmentAr: ce.departmentAr,
+        isActive: ce.isActive,
+      },
+    }));
+
+    // Assemble questions
+    const questionList = questionConfigs.results.map((qc: Record<string, unknown>) => {
+      const qOptions = allOptions
+        .filter((o) => o.questionId === qc.qId && o.isActive)
+        .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number))
+        .map((o) => ({
+          id: o.id,
+          value: o.value,
+          labelAr: o.labelAr,
+          score: o.score,
+          displayOrder: o.displayOrder,
+        }));
+
+      return {
+        questionId: qc.questionId,
+        scope: qc.scope,
+        isRequired: qc.isRequired,
+        displayOrder: qc.qcDisplayOrder,
+        question: {
+          id: qc.qId,
+          code: qc.qCode,
+          questionAr: qc.qQuestionAr,
+          questionType: qc.qQuestionType,
+          section: qc.qSection,
+          dimension: qc.qDimension,
+          isRequired: qc.qIsRequired,
+          isActive: qc.qIsActive,
+          maxSelections: qc.qMaxSelections,
+          options: qOptions,
+        },
+      };
+    });
 
     return ok({
       id: campaign.id,
@@ -64,56 +147,14 @@ export const GET = apiHandler(
       createdBy: campaign.createdBy,
       createdAt: campaign.createdAt,
       updatedAt: campaign.updatedAt,
-      executives: campaign.executives.map((ce) => ({
-        executiveId: ce.executiveId,
-        displayOrder: ce.displayOrder,
-        isEnabled: ce.isEnabled,
-        executive: ce.executive
-          ? {
-              id: ce.executive.id,
-              nameAr: ce.executive.nameAr,
-              titleAr: ce.executive.titleAr,
-              category: ce.executive.category,
-              departmentAr: ce.executive.departmentAr,
-              isActive: ce.executive.isActive,
-            }
-          : null,
-      })),
-      questions: campaign.questionConfig.map((qc) => ({
-        questionId: qc.questionId,
-        scope: qc.scope,
-        isRequired: qc.isRequired,
-        displayOrder: qc.displayOrder,
-        question: qc.question
-          ? {
-              id: qc.question.id,
-              code: qc.question.code,
-              questionAr: qc.question.questionAr,
-              questionType: qc.question.questionType,
-              section: qc.question.section,
-              dimension: qc.question.dimension,
-              isRequired: qc.question.isRequired,
-              isActive: qc.question.isActive,
-              maxSelections: qc.question.maxSelections,
-              options: qc.question.options
-                .filter((o) => o.isActive)
-                .sort((a, b) => a.displayOrder - b.displayOrder)
-                .map((o) => ({
-                  id: o.id,
-                  value: o.value,
-                  labelAr: o.labelAr,
-                  score: o.score,
-                  displayOrder: o.displayOrder,
-                })),
-            }
-          : null,
-      })),
+      executives: execList,
+      questions: questionList,
       counts: {
-        responses: campaign._count.responses,
-        participationLedger: campaign._count.participationLedger,
-        questionSnapshots: campaign._count.questionSnapshots,
-        executives: campaign.executives.length,
-        questions: campaign.questionConfig.length,
+        responses: responseCount.cnt,
+        participationLedger: ledgerCount.cnt,
+        questionSnapshots: snapshotCount.cnt,
+        executives: execList.length,
+        questions: questionList.length,
       },
     });
   }
@@ -121,11 +162,7 @@ export const GET = apiHandler(
 
 /**
  * PATCH /api/admin/campaigns/[id]
- * Update fields. Unsafe edits are rejected when status='active' (spec §7):
- *   - When status='active', only descriptionAr / endsAt (extension only) /
- *     minimumReportingThreshold are allowed.
- *   - When status='closed' or 'archived', PATCH is rejected entirely.
- *   - When status='draft' or 'scheduled', all fields are editable.
+ * Update fields with active-campaign restrictions.
  */
 const patchSchema = z
   .object({
@@ -174,14 +211,12 @@ const patchSchema = z
     }
   );
 
-/** Whitelist of fields allowed to be changed when status='active'. */
 const SAFE_ACTIVE_FIELDS = new Set([
   "descriptionAr",
   "endsAt",
   "minimumReportingThreshold",
 ]);
 
-/** Returns the list of fields the patch is trying to change. */
 function changedFields(input: Record<string, unknown>): string[] {
   return Object.keys(input);
 }
@@ -191,6 +226,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -206,10 +242,11 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data as Record<string, unknown>;
 
-    const campaign = await db.campaign.findUnique({ where: { id } });
+    const campaign = await db.prepare(
+      `SELECT * FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    // Lock down closed / archived campaigns entirely.
     if (campaign.status === "closed" || campaign.status === "archived") {
       return fail(
         "لا يمكن تعديل حملة مغلقة أو مؤرشفة حفاظاً على سلامة النتائج.",
@@ -217,7 +254,6 @@ export const PATCH = apiHandler(
       );
     }
 
-    // For active campaigns, only allow safe edits.
     if (campaign.status === "active") {
       const changed = changedFields(input);
       const unsafe = changed.filter((k) => !SAFE_ACTIVE_FIELDS.has(k));
@@ -226,13 +262,12 @@ export const PATCH = apiHandler(
           blockedFields: unsafe,
         });
       }
-      // endsAt extension: new endsAt must be >= old endsAt (if both set).
       if (
         input.endsAt !== undefined &&
         campaign.endsAt &&
         input.endsAt &&
         new Date(input.endsAt as Date).getTime() <
-          campaign.endsAt.getTime()
+          new Date(campaign.endsAt as string).getTime()
       ) {
         return fail(
           "لا يمكن تقصير تاريخ انتهاء حملة نشطة، فقط تمديده.",
@@ -241,25 +276,52 @@ export const PATCH = apiHandler(
       }
     }
 
-    // Build the update payload, skipping undefined fields.
-    const data: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(input)) {
-      if (v !== undefined) data[k] = v;
+    // Build SET clause dynamically
+    const allowed = [
+      "titleAr", "descriptionAr", "instructionsAr", "startsAt", "endsAt",
+      "timezone", "minimumReportingThreshold", "enableEnvironmentSurvey",
+      "enableFutureSurvey", "allowMultipleExecutiveEvaluations",
+      "minExecutives", "maxExecutives", "allowResume", "privacyNoticeAr",
+    ];
+    const setParts: string[] = [];
+    const bindValues: unknown[] = [];
+    for (const k of allowed) {
+      if (input[k] !== undefined) {
+        let val = input[k];
+        if (val instanceof Date) val = val.toISOString();
+        if (typeof val === "boolean") val = val ? 1 : 0;
+        setParts.push(`${k} = ?`);
+        bindValues.push(val);
+      }
     }
+    if (setParts.length === 0) {
+      return ok({
+        id: campaign.id,
+        titleAr: campaign.titleAr,
+        status: campaign.status,
+        updatedAt: campaign.updatedAt,
+      });
+    }
+    setParts.push("updatedAt = datetime('now')");
+    bindValues.push(id);
 
-    const updated = await db.campaign.update({
-      where: { id },
-      data: data as Parameters<typeof db.campaign.update>[0]["data"],
-    });
+    const now = new Date().toISOString();
+    await db.prepare(
+      `UPDATE Campaign SET ${setParts.join(", ")} WHERE id = ?`
+    ).bind(...bindValues).run();
+
+    const updated = await db.prepare(
+      `SELECT id, titleAr, status, updatedAt FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown>;
 
     await writeAudit({
       adminUserId: admin.adminId,
       action: "campaign.update",
       entityType: "campaign",
-      entityId: updated.id,
-      campaignId: updated.id,
+      entityId: updated.id as string,
+      campaignId: updated.id as string,
       metadata: {
-        fields: Object.keys(data),
+        fields: Object.keys(input),
         status: campaign.status,
       },
     });
@@ -276,23 +338,27 @@ export const PATCH = apiHandler(
 /**
  * DELETE /api/admin/campaigns/[id]
  * Only allowed when status='draft' AND no participation ledger rows AND
- * no responses. Otherwise return 400 with Arabic message.
+ * no responses.
  */
 export const DELETE = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const campaign = await db.campaign.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { responses: true, participationLedger: true },
-        },
-      },
-    });
+
+    const campaign = await db.prepare(
+      `SELECT * FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
+
+    const respCount = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM Response WHERE campaignId = ?`
+    ).bind(id).first() as Record<string, unknown>;
+    const ledgCount = await db.prepare(
+      `SELECT COUNT(*) AS cnt FROM ParticipationLedger WHERE campaignId = ?`
+    ).bind(id).first() as Record<string, unknown>;
 
     if (campaign.status !== "draft") {
       return fail(
@@ -300,15 +366,21 @@ export const DELETE = apiHandler(
         400
       );
     }
-    if (campaign._count.responses > 0 || campaign._count.participationLedger > 0) {
+    if ((respCount.cnt as number) > 0 || (ledgCount.cnt as number) > 0) {
       return fail(
         "لا يمكن حذف حملة لديها مشاركات مسجلة. يمكنك أرشفتها بدلاً من ذلك.",
         400
       );
     }
 
-    // Cascade deletes will clean up executives, questionConfig, snapshots.
-    await db.campaign.delete({ where: { id } });
+    // Manual cascade deletes (D1 has no foreign key cascade by default)
+    await db.batch([
+      db.prepare(`DELETE FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId IN (SELECT id FROM CampaignQuestionSnapshot WHERE campaignId = ?)`).bind(id),
+      db.prepare(`DELETE FROM CampaignQuestionSnapshot WHERE campaignId = ?`).bind(id),
+      db.prepare(`DELETE FROM CampaignQuestionConfig WHERE campaignId = ?`).bind(id),
+      db.prepare(`DELETE FROM CampaignExecutive WHERE campaignId = ?`).bind(id),
+      db.prepare(`DELETE FROM Campaign WHERE id = ?`).bind(id),
+    ]);
 
     await writeAudit({
       adminUserId: admin.adminId,

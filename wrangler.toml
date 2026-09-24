@@ -1,0 +1,28 @@
+name = "almrshad-survey"
+main = ".open-next/worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "a76a117ad4225d384a4a2dc22ebece83"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "almrshad-survey-db"
+database_id = "b513b6ed-c40c-431f-b1ee-06ba8df9cc72"
+
+# Environment variables (non-secret defaults)
+[vars]
+NODE_ENV = "production"
+
+# Secrets must be set via: wrangler secret put EMPLOYEE_HMAC_SECRET
+# EMPLOYEE_HMAC_SECRET = "set-via-dashboard"
+# ADMIN_AUTH_SECRET = "set-via-dashboard"
+
+# Static assets
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+# Build configuration
+[build]
+command = "npx @opennextjs/cloudflare build"

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -17,50 +17,74 @@ const EXECUTIVE_CATEGORY_KEYS = EXECUTIVE_CATEGORIES.map((c) => c.key);
  *   - ?isActive=true|false
  *   - ?search=<text> (matches nameAr/titleAr/departmentAr)
  *   - ?category=ceo|executive|manager|department_head
- * Each row includes `_count.campaigns` so the UI can show usage.
+ * Each row includes campaignCount so the UI can show usage.
  * Ordered by displayOrder asc, nameAr asc.
  */
 export const GET = apiHandler(async (request: NextRequest) => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+  const db = getDB();
   const url = request.nextUrl;
   const isActiveStr = url.searchParams.get("isActive");
   const search = url.searchParams.get("search") ?? undefined;
   const category = url.searchParams.get("category") ?? undefined;
 
-  const where: {
-    isActive?: boolean;
-    category?: string;
-    OR?: Array<Record<string, unknown>>;
-  } = {};
+  const conditions: string[] = [];
+  const params: unknown[] = [];
 
-  if (isActiveStr === "true") where.isActive = true;
-  else if (isActiveStr === "false") where.isActive = false;
+  if (isActiveStr === "true") {
+    conditions.push("e.isActive = 1");
+  } else if (isActiveStr === "false") {
+    conditions.push("e.isActive = 0");
+  }
 
   if (category && EXECUTIVE_CATEGORY_KEYS.includes(category as never)) {
-    where.category = category;
+    conditions.push("e.category = ?");
+    params.push(category);
   }
 
   if (search && search.trim() !== "") {
     const s = search.trim();
-    where.OR = [
-      { nameAr: { contains: s } },
-      { titleAr: { contains: s } },
-      { departmentAr: { contains: s } },
-    ];
+    conditions.push("(e.nameAr LIKE ? OR e.titleAr LIKE ? OR e.departmentAr LIKE ?)");
+    params.push(`%${s}%`, `%${s}%`, `%${s}%`);
   }
 
-  const executives = await db.executive.findMany({
-    where,
-    orderBy: [{ displayOrder: "asc" }, { nameAr: "asc" }],
-    include: {
-      _count: { select: { campaigns: true } },
-    },
-  });
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const { results: executives } = await db
+    .prepare(
+      `SELECT e.id, e.nameAr, e.titleAr, e.category, e.departmentAr,
+              e.displayOrder, e.isActive, e.deletedAt, e.createdAt, e.updatedAt
+       FROM Executive e
+       ${where}
+       ORDER BY e.displayOrder ASC, e.nameAr ASC`
+    )
+    .bind(...params)
+    .all();
+
+  const executiveIds = executives.map((e: Record<string, unknown>) => e.id);
+
+  let campaignCounts: Record<string, number> = {};
+  if (executiveIds.length > 0) {
+    const placeholders = executiveIds.map(() => "?").join(",");
+    const { results: counts } = await db
+      .prepare(
+        `SELECT executiveId, COUNT(*) as cnt
+         FROM CampaignExecutive
+         WHERE executiveId IN (${placeholders})
+         GROUP BY executiveId`
+      )
+      .bind(...executiveIds)
+      .all();
+
+    for (const row of counts as Record<string, unknown>[]) {
+      campaignCounts[row.executiveId as string] = row.cnt as number;
+    }
+  }
 
   return ok(
-    executives.map((e) => ({
+    executives.map((e: Record<string, unknown>) => ({
       id: e.id,
       nameAr: e.nameAr,
       titleAr: e.titleAr,
@@ -71,7 +95,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
       deletedAt: e.deletedAt,
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
-      campaignCount: e._count.campaigns,
+      campaignCount: campaignCounts[e.id as string] ?? 0,
     }))
   );
 });
@@ -119,40 +143,52 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const input = parsed.data;
 
-  const created = await db.executive.create({
-    data: {
-      nameAr: input.nameAr,
-      titleAr: input.titleAr,
-      category: input.category,
-      departmentAr: input.departmentAr ?? null,
-      displayOrder: input.displayOrder,
-      isActive: input.isActive,
-    },
-  });
+  const db = getDB();
+
+  const { meta } = await db
+    .prepare(
+      `INSERT INTO Executive (id, nameAr, titleAr, category, departmentAr, displayOrder, isActive, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+    )
+    .bind(
+      crypto.randomUUID(),
+      input.nameAr,
+      input.titleAr,
+      input.category,
+      input.departmentAr ?? null,
+      input.displayOrder,
+      input.isActive ? 1 : 0
+    )
+    .run();
+
+  const created = await db
+    .prepare("SELECT * FROM Executive WHERE id = ?")
+    .bind(meta.last_row_id as string)
+    .first();
 
   await writeAudit({
     adminUserId: admin.adminId,
     action: "executive.create",
     entityType: "executive",
-    entityId: created.id,
+    entityId: created!.id as string,
     metadata: {
-      nameAr: created.nameAr,
-      titleAr: created.titleAr,
-      category: created.category,
+      nameAr: created!.nameAr,
+      titleAr: created!.titleAr,
+      category: created!.category,
     },
   });
 
   return ok(
     {
-      id: created.id,
-      nameAr: created.nameAr,
-      titleAr: created.titleAr,
-      category: created.category,
-      departmentAr: created.departmentAr,
-      displayOrder: created.displayOrder,
-      isActive: created.isActive,
-      createdAt: created.createdAt,
-      updatedAt: created.updatedAt,
+      id: created!.id,
+      nameAr: created!.nameAr,
+      titleAr: created!.titleAr,
+      category: created!.category,
+      departmentAr: created!.departmentAr,
+      displayOrder: created!.displayOrder,
+      isActive: created!.isActive,
+      createdAt: created!.createdAt,
+      updatedAt: created!.updatedAt,
     },
     { status: 201 }
   );

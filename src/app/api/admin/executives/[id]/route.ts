@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -15,11 +15,12 @@ const EXECUTIVE_CATEGORY_KEYS = EXECUTIVE_CATEGORIES.map((c) => c.key);
  * Helper — returns true iff the executive is referenced by ANY
  * CampaignExecutive row (regardless of campaign status).
  */
-async function isReferencedByAnyCampaign(id: string): Promise<boolean> {
-  const count = await db.campaignExecutive.count({
-    where: { executiveId: id },
-  });
-  return count > 0;
+async function isReferencedByAnyCampaign(db: D1Database, id: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT COUNT(*) as cnt FROM CampaignExecutive WHERE executiveId = ?")
+    .bind(id)
+    .first<{ cnt: number }>();
+  return (row?.cnt ?? 0) > 0;
 }
 
 /**
@@ -31,12 +32,19 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const e = await db.executive.findUnique({
-      where: { id },
-      include: { _count: { select: { campaigns: true } } },
-    });
+
+    const e = await db
+      .prepare("SELECT * FROM Executive WHERE id = ?")
+      .bind(id)
+      .first();
     if (!e) return fail("المسؤول غير موجود.", 404);
+
+    const countRow = await db
+      .prepare("SELECT COUNT(*) as cnt FROM CampaignExecutive WHERE executiveId = ?")
+      .bind(id)
+      .first<{ cnt: number }>();
 
     return ok({
       id: e.id,
@@ -49,7 +57,7 @@ export const GET = apiHandler(
       deletedAt: e.deletedAt,
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
-      campaignCount: e._count.campaigns,
+      campaignCount: countRow?.cnt ?? 0,
     });
   }
 );
@@ -81,6 +89,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -96,10 +105,14 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data as Record<string, unknown>;
 
-    const existing = await db.executive.findUnique({ where: { id } });
+    const existing = await db
+      .prepare("SELECT * FROM Executive WHERE id = ?")
+      .bind(id)
+      .first();
     if (!existing) return fail("المسؤول غير موجود.", 404);
 
-    const data: Record<string, unknown> = {};
+    const fields: string[] = [];
+    const values: unknown[] = [];
     for (const k of [
       "nameAr",
       "titleAr",
@@ -108,16 +121,25 @@ export const PATCH = apiHandler(
       "displayOrder",
       "isActive",
     ]) {
-      if (input[k] !== undefined) data[k] = input[k];
+      if (input[k] !== undefined) {
+        fields.push(`${k} = ?`);
+        values.push(k === "isActive" ? (input[k] ? 1 : 0) : input[k]);
+      }
     }
 
-    const updated =
-      Object.keys(data).length > 0
-        ? await db.executive.update({
-            where: { id },
-            data: data as Parameters<typeof db.executive.update>[0]["data"],
-          })
-        : existing;
+    let updated = existing;
+    if (fields.length > 0) {
+      values.push(id);
+      await db
+        .prepare(`UPDATE Executive SET ${fields.join(", ")} WHERE id = ?`)
+        .bind(...values)
+        .run();
+
+      updated = await db
+        .prepare("SELECT * FROM Executive WHERE id = ?")
+        .bind(id)
+        .first();
+    }
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -125,7 +147,7 @@ export const PATCH = apiHandler(
       entityType: "executive",
       entityId: id,
       metadata: {
-        fields: Object.keys(data),
+        fields,
         previous: {
           nameAr: existing.nameAr,
           titleAr: existing.titleAr,
@@ -135,25 +157,25 @@ export const PATCH = apiHandler(
           isActive: existing.isActive,
         },
         new: {
-          nameAr: updated.nameAr,
-          titleAr: updated.titleAr,
-          category: updated.category,
-          departmentAr: updated.departmentAr,
-          displayOrder: updated.displayOrder,
-          isActive: updated.isActive,
+          nameAr: updated!.nameAr,
+          titleAr: updated!.titleAr,
+          category: updated!.category,
+          departmentAr: updated!.departmentAr,
+          displayOrder: updated!.displayOrder,
+          isActive: updated!.isActive,
         },
       },
     });
 
     return ok({
-      id: updated.id,
-      nameAr: updated.nameAr,
-      titleAr: updated.titleAr,
-      category: updated.category,
-      departmentAr: updated.departmentAr,
-      displayOrder: updated.displayOrder,
-      isActive: updated.isActive,
-      updatedAt: updated.updatedAt,
+      id: updated!.id,
+      nameAr: updated!.nameAr,
+      titleAr: updated!.titleAr,
+      category: updated!.category,
+      departmentAr: updated!.departmentAr,
+      displayOrder: updated!.displayOrder,
+      isActive: updated!.isActive,
+      updatedAt: updated!.updatedAt,
     });
   }
 );
@@ -174,20 +196,18 @@ export const DELETE = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const existing = await db.executive.findUnique({
-      where: { id },
-      select: { id: true, nameAr: true, titleAr: true, isActive: true, deletedAt: true },
-    });
+
+    const existing = await db
+      .prepare("SELECT id, nameAr, titleAr, isActive, deletedAt FROM Executive WHERE id = ?")
+      .bind(id)
+      .first();
     if (!existing) return fail("المسؤول غير موجود.", 404);
 
-    const referenced = await isReferencedByAnyCampaign(id);
+    const referenced = await isReferencedByAnyCampaign(db, id);
 
     if (referenced) {
-      // Refuse to hard-delete because removing the global row would orphan
-      // historical CampaignExecutive references (and possibly Response rows
-      // whose `executiveId` points to this executive). The admin should
-      // instead remove/disable the per-campaign assignment.
       await writeAudit({
         adminUserId: admin.adminId,
         action: "executive.delete_refused",
@@ -205,7 +225,7 @@ export const DELETE = apiHandler(
       );
     }
 
-    await db.executive.delete({ where: { id } });
+    await db.prepare("DELETE FROM Executive WHERE id = ?").bind(id).run();
 
     await writeAudit({
       adminUserId: admin.adminId,

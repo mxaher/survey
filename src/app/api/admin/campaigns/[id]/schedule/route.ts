@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -9,25 +9,19 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/admin/campaigns/[id]/schedule
- * Schedules a draft campaign for future activation. Requires startsAt in
- * the future. Set status='scheduled'. Audit `campaign.schedule`.
+ * Schedules a draft campaign for future activation.
  */
 export const POST = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ id: string }> }) => {
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const campaign = await db.campaign.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        status: true,
-        titleAr: true,
-        startsAt: true,
-        endsAt: true,
-      },
-    });
+
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr, startsAt, endsAt FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
     if (campaign.status !== "draft") {
@@ -45,17 +39,21 @@ export const POST = apiHandler(
     }
 
     const now = new Date();
-    if (campaign.startsAt.getTime() <= now.getTime()) {
+    const startsAtDate = new Date(campaign.startsAt as string);
+    if (startsAtDate.getTime() <= now.getTime()) {
       return fail(
         "يجب أن يكون تاريخ بدء الحملة في المستقبل لجدولتها.",
         400
       );
     }
 
-    const updated = await db.campaign.update({
-      where: { id },
-      data: { status: "scheduled" },
-    });
+    await db.prepare(
+      `UPDATE Campaign SET status = 'scheduled', updatedAt = datetime('now') WHERE id = ?`
+    ).bind(id).run();
+
+    const updated = await db.prepare(
+      `SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?`
+    ).bind(id).first() as Record<string, unknown>;
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -66,8 +64,8 @@ export const POST = apiHandler(
       metadata: {
         previousStatus: campaign.status,
         newStatus: updated.status,
-        startsAt: campaign.startsAt.toISOString(),
-        endsAt: campaign.endsAt?.toISOString() ?? null,
+        startsAt: campaign.startsAt,
+        endsAt: campaign.endsAt ?? null,
       },
     });
 

@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -14,106 +14,76 @@ const DIM_LABEL_AR: Record<string, string> = Object.fromEntries(
  * GET /api/admin/dashboard
  *
  * Admin dashboard summary. Auth required (both roles can read).
- *
- * Returns:
- *   - campaignsByStatus: { status, count }[]
- *   - totals: { activeExecutives, activeQuestions, responses, campaigns }
- *   - latestCampaign: { id, titleAr, status, responseCount } | null
- *   - orgDimensions: { dimension, labelAr, averageScore, responseCount }[]
- *       — org-wide leadership dimension averages across ALL active/closed
- *         campaigns' executive evaluations (respecting each campaign's
- *         threshold so low-N campaigns don't skew the average). Used by
- *         the dashboard "ملخص الأبعاد على مستوى المؤسسة" widget.
- *
- * "responses" is an anonymized aggregate count — we never expose any
- * employee identifier or join back to participation_ledger.
  */
 export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
-  // Group campaigns by status.
-  const campaigns = await db.campaign.findMany({
-    select: {
-      id: true,
-      titleAr: true,
-      status: true,
-      createdAt: true,
-      minimumReportingThreshold: true,
-      _count: { select: { responses: true } },
-    },
-  });
+  const db = getDB();
+
+  // Group campaigns by status with response counts.
+  const campaignsRaw = await db.prepare(
+    `SELECT c.id, c.titleAr, c.status, c.createdAt, c.minimumReportingThreshold,
+      (SELECT COUNT(*) FROM Response WHERE campaignId = c.id) AS responseCount
+     FROM Campaign c ORDER BY c.createdAt DESC`
+  ).all();
 
   const statusCounts = new Map<string, number>();
-  for (const c of campaigns) {
-    statusCounts.set(c.status, (statusCounts.get(c.status) ?? 0) + 1);
+  for (const c of campaignsRaw.results) {
+    const status = c.status as string;
+    statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1);
   }
   const campaignsByStatus = Array.from(statusCounts.entries()).map(
     ([status, count]) => ({ status, count })
   );
 
-  const [activeExecutives, activeQuestions, totalResponses] =
-    await Promise.all([
-      db.executive.count({
-        where: { isActive: true, deletedAt: null },
-      }),
-      db.question.count({
-        where: { isActive: true, deletedAt: null },
-      }),
-      db.response.count(),
-    ]);
+  const [activeExecutives, activeQuestions, totalResponses] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) as cnt FROM Executive WHERE isActive = 1 AND deletedAt IS NULL`).first<{ cnt: number }>(),
+    db.prepare(`SELECT COUNT(*) as cnt FROM Question WHERE isActive = 1 AND deletedAt IS NULL`).first<{ cnt: number }>(),
+    db.prepare(`SELECT COUNT(*) as cnt FROM Response`).first<{ cnt: number }>(),
+  ]);
 
-  // ─── Participation rate ────────────────────────────────────────────
-  // eligible_employees_count is a SystemSetting (admin-configurable).
-  // distinct evaluators = distinct employeeHmac values with at least one
-  // submitted participation_ledger row across active/closed campaigns.
-  // participation rate = distinct evaluators / eligible × 100.
-  // Both numbers are aggregates — no HMAC values are returned.
-  const eligibleSetting = await db.systemSetting.findUnique({
-    where: { key: "eligible_employees_count" },
-  });
+  // Participation rate
+  const eligibleSetting = await db.prepare(
+    `SELECT * FROM SystemSetting WHERE key = ?`
+  ).bind("eligible_employees_count").first() as Record<string, unknown> | null;
   const eligibleCount = eligibleSetting
-    ? parseInt(eligibleSetting.valueAr, 10) || 0
+    ? parseInt(eligibleSetting.valueAr as string, 10) || 0
     : 0;
 
-  const distinctEvaluators = await db.participationLedger.groupBy({
-    by: ["employeeHmac"],
-    where: {
-      status: "submitted",
-      campaign: { status: { in: ["active", "closed"] } },
-    },
-    _count: { _all: true },
-  });
-  const distinctEvaluatorCount = distinctEvaluators.length;
+  const distinctEvaluators = await db.prepare(
+    `SELECT DISTINCT pl.employeeHmac
+     FROM ParticipationLedger pl
+     JOIN Campaign c ON c.id = pl.campaignId
+     WHERE pl.status = 'submitted' AND c.status IN ('active', 'closed')`
+  ).all();
+  const distinctEvaluatorCount = distinctEvaluators.results.length;
   const participationRate =
     eligibleCount > 0
       ? Math.round((distinctEvaluatorCount / eligibleCount) * 10000) / 100
       : null;
 
-  // ─── Recent activity (last 5 audit entries) ────────────────────────
-  // Used by the dashboard "آخر النشاطات" widget. Never includes employee
-  // data — audit logs only contain admin actions + entity references.
-  // AuditLog has no Prisma relation to AdminUser (intentional — keeps the
-  // audit log decoupled), so we fetch the admin users separately and join
-  // in JS.
-  const recentActivityRaw = await db.auditLog.findMany({
-    take: 5,
-    orderBy: { createdAt: "desc" },
-  });
+  // Recent activity (last 5 audit entries)
+  const recentActivityRaw = await db.prepare(
+    `SELECT * FROM AuditLog ORDER BY createdAt DESC LIMIT 5`
+  ).all();
   const adminIds = Array.from(
     new Set(
-      recentActivityRaw
-        .map((a) => a.adminUserId)
+      recentActivityRaw.results
+        .map((a) => a.adminUserId as string | null)
         .filter((id): id is string => id !== null)
     )
   );
-  const adminUsers = await db.adminUser.findMany({
-    where: { id: { in: adminIds } },
-    select: { id: true, displayName: true, externalId: true, role: true },
-  });
+  let adminUsers: Record<string, unknown>[] = [];
+  if (adminIds.length > 0) {
+    const placeholders = adminIds.map(() => "?").join(",");
+    adminUsers = (await db.prepare(
+      `SELECT id, displayName, externalId, role FROM AdminUser WHERE id IN (${placeholders})`
+    ).bind(...adminIds).all()).results as Record<string, unknown>[];
+  }
   const adminUserById = new Map(adminUsers.map((u) => [u.id, u]));
-  const recentActivity = recentActivityRaw.map((a) => {
-    const u = a.adminUserId ? adminUserById.get(a.adminUserId) : null;
+  const recentActivity = recentActivityRaw.results.map((a) => {
+    const u = a.adminUserId ? adminUserById.get(a.adminUserId as string) : null;
     return {
       id: a.id,
       action: a.action,
@@ -121,12 +91,12 @@ export const GET = apiHandler(async () => {
       entityId: a.entityId,
       campaignId: a.campaignId,
       createdAt: a.createdAt,
-      adminDisplayName: u?.displayName ?? u?.externalId ?? "—",
-      adminRole: u?.role ?? null,
+      adminDisplayName: (u?.displayName as string) ?? (u?.externalId as string) ?? "—",
+      adminRole: (u?.role as string) ?? null,
     };
   });
 
-  // Latest campaign snapshot (most recent by createdAt).
+  // Latest campaign snapshot
   let latestCampaign: {
     id: string;
     titleAr: string;
@@ -134,125 +104,88 @@ export const GET = apiHandler(async () => {
     responseCount: number;
   } | null = null;
 
-  if (campaigns.length > 0) {
-    const latest = [...campaigns].sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
-    )[0];
+  if (campaignsRaw.results.length > 0) {
+    const latest = campaignsRaw.results[0] as Record<string, unknown>;
     latestCampaign = {
-      id: latest.id,
-      titleAr: latest.titleAr,
-      status: latest.status,
-      responseCount: latest._count.responses,
+      id: latest.id as string,
+      titleAr: latest.titleAr as string,
+      status: latest.status as string,
+      responseCount: latest.responseCount as number,
     };
   }
 
-  // ─── Org-wide leadership dimension averages ────────────────────────
-  // Only include campaigns that are active or closed (draft/scheduled/
-  // archived are excluded — they don't have meaningful response data).
-  // For each campaign we additionally enforce the per-campaign threshold
-  // per executive (so a 1-eval exec doesn't leak into the org average).
-  const reportableCampaigns = campaigns.filter(
+  // Org-wide leadership dimension averages
+  const reportableCampaigns = campaignsRaw.results.filter(
     (c) => c.status === "active" || c.status === "closed"
   );
 
-  // Fetch per-(campaign × executive) distinct evaluation counts so we
-  // can skip suppressed executives per-campaign.
   const dimByCampaign = new Map<
-    string, // campaignId
+    string,
     Map<string, { sum: number; valid: number; total: number }>
   >();
 
   if (reportableCampaigns.length > 0) {
-    const campaignIds = reportableCampaigns.map((c) => c.id);
+    const campaignIds = reportableCampaigns.map((c) => c.id as string);
     const thresholdById = new Map(
-      reportableCampaigns.map((c) => [c.id, c.minimumReportingThreshold])
+      reportableCampaigns.map((c) => [c.id as string, c.minimumReportingThreshold as number])
     );
 
-    // All leadership responses in those campaigns, joined with the
-    // snapshot to get the dimension.
+    const placeholders = campaignIds.map(() => "?").join(",");
     const [responses, snapshots] = await Promise.all([
-      db.response.findMany({
-        where: {
-          campaignId: { in: campaignIds },
-          responseType: "executive",
-        },
-        select: {
-          campaignId: true,
-          executiveId: true,
-          responseGroupId: true,
-          questionSnapshotId: true,
-          selectedScore: true,
-        },
-      }),
-      db.campaignQuestionSnapshot.findMany({
-        where: {
-          campaignId: { in: campaignIds },
-          section: "leadership",
-          dimension: { not: null },
-        },
-        select: { id: true, campaignId: true, dimension: true },
-      }),
+      db.prepare(
+        `SELECT campaignId, executiveId, responseGroupId, questionSnapshotId, selectedScore
+         FROM Response
+         WHERE campaignId IN (${placeholders}) AND responseType = 'executive'`
+      ).bind(...campaignIds).all(),
+      db.prepare(
+        `SELECT id, campaignId, dimension
+         FROM CampaignQuestionSnapshot
+         WHERE campaignId IN (${placeholders}) AND section = 'leadership' AND dimension IS NOT NULL`
+      ).bind(...campaignIds).all(),
     ]);
 
-    // snapshotId → dimension
     const snapDim = new Map<string, string>();
-    for (const s of snapshots) snapDim.set(s.id, s.dimension ?? "");
+    for (const s of snapshots.results) snapDim.set(s.id as string, (s.dimension as string) ?? "");
 
-    // Per-(campaign × executive) distinct responseGroupId count → eval count.
     const evalCountByCampaignExec = new Map<string, Set<string>>();
-    for (const r of responses) {
+    for (const r of responses.results) {
       const key = `${r.campaignId}::${r.executiveId ?? ""}`;
       const set = evalCountByCampaignExec.get(key) ?? new Set<string>();
-      set.add(r.responseGroupId);
+      set.add(r.responseGroupId as string);
       evalCountByCampaignExec.set(key, set);
     }
 
-    // Per-(campaign × executive × dimension) accumulator.
-    const perExecDim = new Map<
-      string, // `${campaignId}::${execId}::${dimension}`
-      { sum: number; valid: number }
-    >();
+    const perExecDim = new Map<string, { sum: number; valid: number }>();
 
-    for (const r of responses) {
-      const dim = snapDim.get(r.questionSnapshotId);
+    for (const r of responses.results) {
+      const dim = snapDim.get(r.questionSnapshotId as string);
       if (!dim) continue;
       const key = `${r.campaignId}::${r.executiveId ?? ""}::${dim}`;
       const acc = perExecDim.get(key) ?? { sum: 0, valid: 0 };
       if (r.selectedScore !== null) {
-        acc.sum += r.selectedScore;
+        acc.sum += r.selectedScore as number;
         acc.valid += 1;
       }
       perExecDim.set(key, acc);
     }
 
-    // For each campaign × exec × dimension, average the per-exec dimension
-    // score (so each exec contributes equally regardless of how many
-    // questions they answered in that dimension), then bucket by dimension
-    // across the whole org — but only for executives that meet the
-    // per-campaign threshold.
-    const dimAccumulator = new Map<
-      string,
-      { sum: number; count: number; total: number }
-    >();
+    const dimAccumulator = new Map<string, { sum: number; count: number; total: number }>();
 
     for (const [key, acc] of perExecDim.entries()) {
       const [campaignId, execId, dim] = key.split("::");
       const threshold = thresholdById.get(campaignId) ?? 5;
-      const evalCount =
-        evalCountByCampaignExec.get(`${campaignId}::${execId}`)?.size ?? 0;
-      if (evalCount < threshold) continue; // skip suppressed execs
+      const evalCount = evalCountByCampaignExec.get(`${campaignId}::${execId}`)?.size ?? 0;
+      if (evalCount < threshold) continue;
       if (acc.valid === 0) continue;
 
       const avg = acc.sum / acc.valid;
-      const cur =
-        dimAccumulator.get(dim) ?? { sum: 0, count: 0, total: 0 };
+      const cur = dimAccumulator.get(dim) ?? { sum: 0, count: 0, total: 0 };
       cur.sum += avg;
       cur.count += 1;
       cur.total += acc.valid;
       dimAccumulator.set(dim, cur);
     }
 
-    // Build the org-wide dimension array in LEADERSHIP_DIMENSIONS order.
     const orgDims = LEADERSHIP_DIMENSIONS.map((d) => {
       const acc = dimAccumulator.get(d.key);
       return {
@@ -264,7 +197,6 @@ export const GET = apiHandler(async () => {
       };
     }).filter((d) => d.averageScore !== null);
 
-    // Sort descending by averageScore for the strengths widget.
     const orgDimensions = [...orgDims].sort(
       (a, b) => (b.averageScore ?? 0) - (a.averageScore ?? 0)
     );
@@ -272,10 +204,10 @@ export const GET = apiHandler(async () => {
     return ok({
       campaignsByStatus,
       totals: {
-        activeExecutives,
-        activeQuestions,
-        responses: totalResponses,
-        campaigns: campaigns.length,
+        activeExecutives: activeExecutives?.cnt ?? 0,
+        activeQuestions: activeQuestions?.cnt ?? 0,
+        responses: totalResponses?.cnt ?? 0,
+        campaigns: campaignsRaw.results.length,
       },
       latestCampaign,
       orgDimensions,
@@ -291,10 +223,10 @@ export const GET = apiHandler(async () => {
   return ok({
     campaignsByStatus,
     totals: {
-      activeExecutives,
-      activeQuestions,
-      responses: totalResponses,
-      campaigns: campaigns.length,
+      activeExecutives: activeExecutives?.cnt ?? 0,
+      activeQuestions: activeQuestions?.cnt ?? 0,
+      responses: totalResponses?.cnt ?? 0,
+      campaigns: campaignsRaw.results.length,
     },
     latestCampaign,
     orgDimensions: [],

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -25,14 +25,21 @@ const QUESTION_SECTION_KEYS = QUESTION_SECTIONS.map((s) => s.key);
  * historical record. The admin may only toggle `isActive` / `displayOrder`
  * in that case.
  */
-async function isReferencedByCampaignWithResponses(id: string): Promise<boolean> {
-  const count = await db.campaignQuestionConfig.count({
-    where: {
-      questionId: id,
-      campaign: { responses: { some: {} } },
-    },
-  });
-  return count > 0;
+async function isReferencedByCampaignWithResponses(
+  db: any,
+  id: string
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) as cnt
+       FROM CampaignQuestionConfig cqc
+       JOIN Campaign c ON c.id = cqc.campaignId
+       WHERE cqc.questionId = ?
+         AND EXISTS (SELECT 1 FROM Response r WHERE r.campaignId = c.id)`
+    )
+    .bind(id)
+    .first();
+  return ((row?.cnt as number) ?? 0) > 0;
 }
 
 /**
@@ -40,11 +47,17 @@ async function isReferencedByCampaignWithResponses(id: string): Promise<boolean>
  * CampaignQuestionConfig row (regardless of whether the campaign has
  * responses). This is the "hard-delete blocked" trigger.
  */
-async function isReferencedByAnyCampaign(id: string): Promise<boolean> {
-  const count = await db.campaignQuestionConfig.count({
-    where: { questionId: id },
-  });
-  return count > 0;
+async function isReferencedByAnyCampaign(
+  db: any,
+  id: string
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      "SELECT COUNT(*) as cnt FROM CampaignQuestionConfig WHERE questionId = ?"
+    )
+    .bind(id)
+    .first();
+  return ((row?.cnt as number) ?? 0) > 0;
 }
 
 /**
@@ -57,18 +70,33 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const q = await db.question.findUnique({
-      where: { id },
-      include: {
-        options: { orderBy: { displayOrder: "asc" } },
-        _count: { select: { campaignConfig: true } },
-      },
-    });
+
+    const q = await db
+      .prepare("SELECT * FROM Question WHERE id = ?")
+      .bind(id)
+      .first();
     if (!q) return fail("السؤال غير موجود.", 404);
 
-    // Useful for the admin UI: tell it whether structural edits are blocked.
-    const structurallyLocked = await isReferencedByCampaignWithResponses(id);
+    const { results: options } = await db
+      .prepare(
+        "SELECT id, value, labelAr, score, displayOrder, isActive FROM QuestionOption WHERE questionId = ? ORDER BY displayOrder ASC"
+      )
+      .bind(id)
+      .all();
+
+    const configCountRow = await db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM CampaignQuestionConfig WHERE questionId = ?"
+      )
+      .bind(id)
+      .first();
+
+    const structurallyLocked = await isReferencedByCampaignWithResponses(
+      db,
+      id
+    );
 
     return ok({
       id: q.id,
@@ -87,7 +115,7 @@ export const GET = apiHandler(
       deletedAt: q.deletedAt,
       createdAt: q.createdAt,
       updatedAt: q.updatedAt,
-      options: q.options.map((o) => ({
+      options: options.map((o: Record<string, unknown>) => ({
         id: o.id,
         value: o.value,
         labelAr: o.labelAr,
@@ -95,7 +123,7 @@ export const GET = apiHandler(
         displayOrder: o.displayOrder,
         isActive: o.isActive,
       })),
-      campaignConfigCount: q._count.campaignConfig,
+      campaignConfigCount: (configCountRow?.cnt as number) ?? 0,
       structurallyLocked,
     });
   }
@@ -172,6 +200,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -187,15 +216,25 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data as Record<string, unknown>;
 
-    const existing = await db.question.findUnique({
-      where: { id },
-      include: { options: { orderBy: { displayOrder: "asc" } } },
-    });
+    const existing = await db
+      .prepare("SELECT * FROM Question WHERE id = ?")
+      .bind(id)
+      .first();
     if (!existing) return fail("السؤال غير موجود.", 404);
+
+    const { results: existingOptions } = await db
+      .prepare(
+        "SELECT id, value, labelAr, score, displayOrder, isActive FROM QuestionOption WHERE questionId = ? ORDER BY displayOrder ASC"
+      )
+      .bind(id)
+      .all();
 
     // If the question has been answered by anyone (via any campaign with
     // responses), refuse structural edits.
-    const structurallyLocked = await isReferencedByCampaignWithResponses(id);
+    const structurallyLocked = await isReferencedByCampaignWithResponses(
+      db,
+      id
+    );
     if (structurallyLocked) {
       const attemptedFields = Object.keys(input);
       const unsafe = attemptedFields.filter((k) => STRUCTURAL_FIELDS.has(k));
@@ -210,10 +249,10 @@ export const PATCH = apiHandler(
 
     // Code uniqueness check (if changing code).
     if (input.code && input.code !== existing.code) {
-      const clash = await db.question.findUnique({
-        where: { code: input.code as string },
-        select: { id: true },
-      });
+      const clash = await db
+        .prepare("SELECT id FROM Question WHERE code = ?")
+        .bind(input.code as string)
+        .first();
       if (clash && clash.id !== id) {
         return fail(
           "رمز السؤال مستخدم مسبقاً. يرجى اختيار رمز فريد.",
@@ -233,8 +272,10 @@ export const PATCH = apiHandler(
       bumpVersion = true;
     }
 
-    // Build the question-level update payload.
-    const questionUpdate: Record<string, unknown> = {};
+    // Build the question-level update SET clauses.
+    const setClauses: string[] = [];
+    const updateParams: unknown[] = [];
+
     for (const k of [
       "code",
       "questionAr",
@@ -247,13 +288,14 @@ export const PATCH = apiHandler(
       "isActive",
     ]) {
       if (input[k] !== undefined) {
-        questionUpdate[k] = input[k];
+        let val = input[k];
+        if (k === "isRequired" || k === "isActive") {
+          val = val ? 1 : 0;
+        }
+        setClauses.push(`${k} = ?`);
+        updateParams.push(val);
       }
     }
-
-    // If the question is being soft-deleted by setting isActive=false
-    // explicitly, that's allowed (covered by the structurallyLocked check
-    // passing through, since isActive isn't in STRUCTURAL_FIELDS).
 
     // Options handling (only if the body explicitly includes `options`).
     let optionsChanged = false;
@@ -271,90 +313,141 @@ export const PATCH = apiHandler(
         incoming.filter((o) => typeof o.id === "string").map((o) => o.id!)
       );
 
-      // Hard-delete options not present in the incoming array (cascade-safe
-      // because responses reference snapshots, not options).
-      const removed = existing.options.filter((o) => !incomingIds.has(o.id));
+      // Hard-delete options not present in the incoming array.
+      const removed = existingOptions.filter(
+        (o: Record<string, unknown>) => !incomingIds.has(o.id as string)
+      );
       if (removed.length > 0) {
         optionsChanged = true;
-        await db.questionOption.deleteMany({
-          where: { id: { in: removed.map((o) => o.id) } },
-        });
+        const delPlaceholders = removed.map(() => "?").join(",");
+        await db
+          .prepare(
+            `DELETE FROM QuestionOption WHERE id IN (${delPlaceholders})`
+          )
+          .bind(...removed.map((o: Record<string, unknown>) => o.id))
+          .run();
       }
 
-      // Update existing options + create new ones. Detect any value/labelAr/score change.
+      // Update existing options + create new ones.
+      const batchStatements: any[] = [];
+
       for (const inc of incoming) {
         if (inc.id) {
-          const cur = existing.options.find((o) => o.id === inc.id);
+          const cur = existingOptions.find(
+            (o: Record<string, unknown>) => o.id === inc.id
+          );
           if (!cur) {
-            // ID supplied but doesn't belong to this question — refuse to
-            // silently steal it. Treat as a new option instead.
-            await db.questionOption.create({
-              data: {
-                questionId: id,
-                value: inc.value,
-                labelAr: inc.labelAr,
-                score: inc.score ?? null,
-                displayOrder: inc.displayOrder,
-                isActive: inc.isActive ?? true,
-              },
-            });
+            // ID supplied but doesn't belong to this question — treat as new.
+            batchStatements.push(
+              db
+                .prepare(
+                  `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)`
+                )
+                .bind(
+                  crypto.randomUUID(),
+                  id,
+                  inc.value,
+                  inc.labelAr,
+                  inc.score ?? null,
+                  inc.displayOrder,
+                  inc.isActive !== undefined ? (inc.isActive ? 1 : 0) : 1
+                )
+            );
             optionsChanged = true;
             continue;
           }
-          const data: Record<string, unknown> = {};
-          if (cur.value !== inc.value) {
-            data.value = inc.value;
+
+          const optSetClauses: string[] = [];
+          const optParams: unknown[] = [];
+
+          if ((cur.value as string) !== inc.value) {
+            optSetClauses.push("value = ?");
+            optParams.push(inc.value);
             optionsChanged = true;
           }
-          if (cur.labelAr !== inc.labelAr) {
-            data.labelAr = inc.labelAr;
+          if ((cur.labelAr as string) !== inc.labelAr) {
+            optSetClauses.push("labelAr = ?");
+            optParams.push(inc.labelAr);
             optionsChanged = true;
           }
-          // `score` change counts as structural too — historical averages
-          // computed from the OLD score would now differ.
           if (inc.score !== undefined) {
             const newScore = inc.score ?? null;
             if ((cur.score ?? null) !== newScore) {
-              data.score = newScore;
+              optSetClauses.push("score = ?");
+              optParams.push(newScore);
               optionsChanged = true;
             }
           }
-          if (cur.displayOrder !== inc.displayOrder) {
-            data.displayOrder = inc.displayOrder;
+          if ((cur.displayOrder as number) !== inc.displayOrder) {
+            optSetClauses.push("displayOrder = ?");
+            optParams.push(inc.displayOrder);
           }
-          if (inc.isActive !== undefined && cur.isActive !== inc.isActive) {
-            data.isActive = inc.isActive;
+          if (
+            inc.isActive !== undefined &&
+            (cur.isActive as number) !== (inc.isActive ? 1 : 0)
+          ) {
+            optSetClauses.push("isActive = ?");
+            optParams.push(inc.isActive ? 1 : 0);
           }
-          if (Object.keys(data).length > 0) {
-            await db.questionOption.update({ where: { id: inc.id }, data });
+
+          if (optSetClauses.length > 0) {
+            optParams.push(inc.id);
+            batchStatements.push(
+              db
+                .prepare(
+                  `UPDATE QuestionOption SET ${optSetClauses.join(", ")} WHERE id = ?`
+                )
+                .bind(...optParams)
+            );
           }
         } else {
           // Brand-new option.
-          await db.questionOption.create({
-            data: {
-              questionId: id,
-              value: inc.value,
-              labelAr: inc.labelAr,
-              score: inc.score ?? null,
-              displayOrder: inc.displayOrder,
-              isActive: inc.isActive ?? true,
-            },
-          });
+          batchStatements.push(
+            db
+              .prepare(
+                `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+              )
+              .bind(
+                crypto.randomUUID(),
+                id,
+                inc.value,
+                inc.labelAr,
+                inc.score ?? null,
+                inc.displayOrder,
+                inc.isActive !== undefined ? (inc.isActive ? 1 : 0) : 1
+              )
+          );
           optionsChanged = true;
         }
+      }
+
+      if (batchStatements.length > 0) {
+        await db.batch(batchStatements);
       }
     }
 
     if (optionsChanged) bumpVersion = true;
-    if (bumpVersion) questionUpdate.version = (existing.version ?? 1) + 1;
+    if (bumpVersion) {
+      const currentVersion = (existing.version as number) ?? 1;
+      setClauses.push("version = ?");
+      updateParams.push(currentVersion + 1);
+    }
 
-    const updated =
-      Object.keys(questionUpdate).length > 0
-        ? await db.question.update({
-            where: { id },
-            data: questionUpdate as Parameters<typeof db.question.update>[0]["data"],
-          })
-        : existing;
+    let updated = existing;
+    if (setClauses.length > 0) {
+      setClauses.push("updatedAt = datetime('now')");
+      updateParams.push(id);
+      await db
+        .prepare(`UPDATE Question SET ${setClauses.join(", ")} WHERE id = ?`)
+        .bind(...updateParams)
+        .run();
+      updated = await db
+        .prepare("SELECT * FROM Question WHERE id = ?")
+        .bind(id)
+        .first();
+    }
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -362,7 +455,7 @@ export const PATCH = apiHandler(
       entityType: "question",
       entityId: id,
       metadata: {
-        fields: Object.keys(questionUpdate),
+        fields: Object.keys(input),
         structurallyLocked,
         versionBumped: bumpVersion,
         previousVersion: existing.version,
@@ -371,29 +464,35 @@ export const PATCH = apiHandler(
     });
 
     // Re-fetch the latest state with options for the response.
-    const refreshed = await db.question.findUnique({
-      where: { id },
-      include: {
-        options: { orderBy: { displayOrder: "asc" } },
-        _count: { select: { campaignConfig: true } },
-      },
-    });
+    const { results: refreshedOptions } = await db
+      .prepare(
+        "SELECT id, value, labelAr, score, displayOrder, isActive FROM QuestionOption WHERE questionId = ? ORDER BY displayOrder ASC"
+      )
+      .bind(id)
+      .all();
+
+    const configCountRow = await db
+      .prepare(
+        "SELECT COUNT(*) as cnt FROM CampaignQuestionConfig WHERE questionId = ?"
+      )
+      .bind(id)
+      .first();
 
     return ok({
-      id: refreshed?.id,
-      code: refreshed?.code,
-      questionAr: refreshed?.questionAr,
-      questionType: refreshed?.questionType,
-      section: refreshed?.section,
-      dimension: refreshed?.dimension,
-      isRequired: refreshed?.isRequired,
-      displayOrder: refreshed?.displayOrder,
-      maxSelections: refreshed?.maxSelections,
-      version: refreshed?.version,
-      isActive: refreshed?.isActive,
-      deletedAt: refreshed?.deletedAt,
-      updatedAt: refreshed?.updatedAt,
-      options: refreshed?.options.map((o) => ({
+      id: updated.id,
+      code: updated.code,
+      questionAr: updated.questionAr,
+      questionType: updated.questionType,
+      section: updated.section,
+      dimension: updated.dimension,
+      isRequired: updated.isRequired,
+      displayOrder: updated.displayOrder,
+      maxSelections: updated.maxSelections,
+      version: updated.version,
+      isActive: updated.isActive,
+      deletedAt: updated.deletedAt,
+      updatedAt: updated.updatedAt,
+      options: refreshedOptions.map((o: Record<string, unknown>) => ({
         id: o.id,
         value: o.value,
         labelAr: o.labelAr,
@@ -401,7 +500,7 @@ export const PATCH = apiHandler(
         displayOrder: o.displayOrder,
         isActive: o.isActive,
       })),
-      campaignConfigCount: refreshed?._count.campaignConfig ?? 0,
+      campaignConfigCount: (configCountRow?.cnt as number) ?? 0,
       structurallyLocked,
     });
   }
@@ -420,18 +519,30 @@ export const DELETE = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id } = await ctx.params;
-    const existing = await db.question.findUnique({
-      where: { id },
-      select: { id: true, code: true, isActive: true, deletedAt: true },
-    });
+
+    const existing = await db
+      .prepare(
+        "SELECT id, code, isActive, deletedAt FROM Question WHERE id = ?"
+      )
+      .bind(id)
+      .first();
     if (!existing) return fail("السؤال غير موجود.", 404);
 
-    const referenced = await isReferencedByAnyCampaign(id);
+    const referenced = await isReferencedByAnyCampaign(db, id);
 
     if (!referenced) {
-      // Hard delete. Cascade will drop its QuestionOption rows.
-      await db.question.delete({ where: { id } });
+      // Hard delete. Also delete its QuestionOption rows.
+      await db
+        .prepare("DELETE FROM QuestionOption WHERE questionId = ?")
+        .bind(id)
+        .run();
+      await db
+        .prepare("DELETE FROM Question WHERE id = ?")
+        .bind(id)
+        .run();
+
       await writeAudit({
         adminUserId: admin.adminId,
         action: "question.delete",
@@ -446,10 +557,17 @@ export const DELETE = apiHandler(
     }
 
     // Soft-delete: keep the row for historical integrity, just hide it.
-    const updated = await db.question.update({
-      where: { id },
-      data: { isActive: false, deletedAt: new Date() },
-    });
+    await db
+      .prepare(
+        "UPDATE Question SET isActive = 0, deletedAt = datetime('now'), updatedAt = datetime('now') WHERE id = ?"
+      )
+      .bind(id)
+      .run();
+
+    const updated = await db
+      .prepare("SELECT * FROM Question WHERE id = ?")
+      .bind(id)
+      .first();
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -468,11 +586,11 @@ export const DELETE = apiHandler(
     // because the operation (soft-delete) actually succeeded; the `message`
     // field explains to the admin what happened.
     return ok({
-      id: updated.id,
+      id: updated!.id,
       deleted: true,
       mode: "soft",
-      isActive: updated.isActive,
-      deletedAt: updated.deletedAt,
+      isActive: updated!.isActive,
+      deletedAt: updated!.deletedAt,
       message: MESSAGES.deleteQuestionBlocked,
     });
   }

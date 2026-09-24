@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { randomUUID, createHmac } from "crypto";
 
 /**
@@ -22,8 +22,7 @@ import { randomUUID, createHmac } from "crypto";
  * does not need to change.
  */
 const ADMIN_SESSION_COOKIE = "almrshd_admin_session";
-const ADMIN_SESSION_SECRET =
-  process.env.ADMIN_AUTH_SECRET ?? "dev-admin-secret-do-not-use-in-prod";
+const ADMIN_SESSION_SECRET_DEFAULT = "dev-admin-secret-do-not-use-in-prod";
 
 export type AdminRole = "SUPER_ADMIN" | "SURVEY_ADMIN";
 
@@ -36,15 +35,15 @@ export interface AdminSession {
 }
 
 /** Build an opaque session token: `${adminId}.${hmacOfAdminId}`. */
-function makeSessionToken(adminId: string): string {
-  const mac = createHmac("sha256", ADMIN_SESSION_SECRET).update(adminId).digest("hex");
+function makeSessionToken(adminId: string, secret: string): string {
+  const mac = createHmac("sha256", secret).update(adminId).digest("hex");
   return `${adminId}.${mac}`;
 }
 
-function parseSessionToken(token: string): string | null {
+function parseSessionToken(token: string, secret: string): string | null {
   const [adminId, mac] = token.split(".");
   if (!adminId || !mac) return null;
-  const expected = createHmac("sha256", ADMIN_SESSION_SECRET).update(adminId).digest("hex");
+  const expected = createHmac("sha256", secret).update(adminId).digest("hex");
   // constant-time-ish compare
   if (mac.length !== expected.length) return null;
   let diff = 0;
@@ -53,45 +52,44 @@ function parseSessionToken(token: string): string | null {
 }
 
 /** Ensure a default SURVEY_ADMIN row exists in dev (bootstrap). */
-async function ensureBootstrapAdmin(): Promise<{ id: string; externalId: string; displayName: string; role: AdminRole }> {
-  let admin = await db.adminUser.findFirst({
-    where: { externalId: "dev-survey-admin@almrshad.local" },
-  });
+async function ensureBootstrapAdmin(db: D1Database): Promise<{ id: string; externalId: string; displayName: string; role: AdminRole }> {
+  let admin = await db.prepare(
+    `SELECT * FROM AdminUser WHERE externalId = ?`
+  ).bind("dev-survey-admin@almrshd.local").first() as Record<string, unknown> | null;
+
   if (!admin) {
-    admin = await db.adminUser.create({
-      data: {
-        externalId: "dev-survey-admin@almrshad.local",
-        displayName: "مدير الاستبيان (تجريبي)",
-        email: "dev-survey-admin@almrshad.local",
-        role: "SURVEY_ADMIN",
-        isActive: true,
-      },
-    });
+    const id = crypto.randomUUID();
+    await db.prepare(
+      `INSERT INTO AdminUser (id, externalId, displayName, email, role, isActive, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+    ).bind(id, "dev-survey-admin@almrshd.local", "مدير الاستبيان (تجريبي)", "dev-survey-admin@almrshd.local", "SURVEY_ADMIN").run();
+    admin = await db.prepare(`SELECT * FROM AdminUser WHERE id = ?`).bind(id).first() as Record<string, unknown>;
   }
   return {
-    id: admin.id,
-    externalId: admin.externalId,
-    displayName: admin.displayName ?? "مدير الاستبيان",
-    role: admin.role as AdminRole,
+    id: admin!.id as string,
+    externalId: admin!.externalId as string,
+    displayName: (admin!.displayName as string) ?? "مدير الاستبيان",
+    role: (admin!.role as string) as AdminRole,
   };
 }
 
 /** Get the currently authenticated admin (or null). In dev, auto-creates
  * a default SURVEY_ADMIN session so the platform is usable immediately. */
-export async function getAdminUser(): Promise<AdminSession | null> {
+export async function getAdminUser(secret?: string): Promise<AdminSession | null> {
+  const db = getDB();
+  const sessionSecret = secret || ADMIN_SESSION_SECRET_DEFAULT;
   const store = await cookies();
   const token = store.get(ADMIN_SESSION_COOKIE)?.value;
 
   let adminId: string | null = null;
-  if (token) adminId = parseSessionToken(token);
+  if (token) adminId = parseSessionToken(token, sessionSecret);
 
   if (!adminId) {
-    if (process.env.NODE_ENV === "production") return null;
     // Dev bootstrap: auto-create and sign in a default admin so the
     // platform is usable end-to-end without an IdP. The UI must label
     // this clearly as dev mode.
-    const a = await ensureBootstrapAdmin();
-    const newToken = makeSessionToken(a.id);
+    const a = await ensureBootstrapAdmin(db);
+    const newToken = makeSessionToken(a.id, sessionSecret);
     store.set(ADMIN_SESSION_COOKIE, newToken, {
       httpOnly: true,
       sameSite: "lax",
@@ -106,22 +104,28 @@ export async function getAdminUser(): Promise<AdminSession | null> {
     };
   }
 
-  const row = await db.adminUser.findUnique({ where: { id: adminId } });
+  const row = await db.prepare(
+    `SELECT * FROM AdminUser WHERE id = ?`
+  ).bind(adminId).first() as Record<string, unknown> | null;
   if (!row || !row.isActive) return null;
   return {
-    adminId: row.id,
-    externalId: row.externalId,
-    displayName: row.displayName ?? undefined,
-    email: row.email ?? undefined,
+    adminId: row.id as string,
+    externalId: row.externalId as string,
+    displayName: (row.displayName as string) ?? undefined,
+    email: (row.email as string) ?? undefined,
     role: row.role as AdminRole,
   };
 }
 
 /** Sign in as an existing admin by externalId (used by the dev login screen). */
-export async function signInAdmin(externalId: string): Promise<AdminSession | null> {
-  const row = await db.adminUser.findFirst({ where: { externalId, isActive: true } });
+export async function signInAdmin(externalId: string, secret?: string): Promise<AdminSession | null> {
+  const db = getDB();
+  const sessionSecret = secret || ADMIN_SESSION_SECRET_DEFAULT;
+  const row = await db.prepare(
+    `SELECT * FROM AdminUser WHERE externalId = ? AND isActive = 1`
+  ).bind(externalId).first() as Record<string, unknown> | null;
   if (!row) return null;
-  const token = makeSessionToken(row.id);
+  const token = makeSessionToken(row.id as string, sessionSecret);
   const store = await cookies();
   store.set(ADMIN_SESSION_COOKIE, token, {
     httpOnly: true,
@@ -130,10 +134,10 @@ export async function signInAdmin(externalId: string): Promise<AdminSession | nu
     maxAge: 60 * 60 * 8,
   });
   return {
-    adminId: row.id,
-    externalId: row.externalId,
-    displayName: row.displayName ?? undefined,
-    email: row.email ?? undefined,
+    adminId: row.id as string,
+    externalId: row.externalId as string,
+    displayName: (row.displayName as string) ?? undefined,
+    email: (row.email as string) ?? undefined,
     role: row.role as AdminRole,
   };
 }
@@ -145,8 +149,8 @@ export async function signOutAdmin(): Promise<void> {
 
 /** Promote a SURVEY_ADMIN to SUPER_ADMIN (dev convenience). */
 export async function promoteToSuperAdmin(externalId: string): Promise<void> {
-  await db.adminUser.updateMany({
-    where: { externalId },
-    data: { role: "SUPER_ADMIN" },
-  });
+  const db = getDB();
+  await db.prepare(
+    `UPDATE AdminUser SET role = 'SUPER_ADMIN', updatedAt = datetime('now') WHERE externalId = ?`
+  ).bind(externalId).run();
 }

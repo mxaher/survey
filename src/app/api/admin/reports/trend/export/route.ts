@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -47,121 +47,113 @@ interface TrendRow {
   dimAverages: (number | null)[];
 }
 
-/**
- * Shared aggregation for the trend CSV + XLSX exports. Pulls all the data
- * needed in a handful of queries, then computes per-campaign rows in JS.
- *
- * Respects each campaign's per-exec threshold (low-N execs are skipped
- * from the dimension averages). NO employee identifiers — aggregate
- * numbers only.
- */
 async function computeTrendRows(
   allowedStatuses: string[]
 ): Promise<{ rows: TrendRow[]; eligibleCount: number }> {
-  const campaigns = await db.campaign.findMany({
-    where: { status: { in: allowedStatuses } },
-    select: {
-      id: true,
-      titleAr: true,
-      status: true,
-      activatedAt: true,
-      minimumReportingThreshold: true,
-    },
-    orderBy: { activatedAt: "asc" },
-  });
+  const db = getDB();
 
+  const placeholders = allowedStatuses.map(() => "?").join(",");
+  const campaignsResult = await db.prepare(
+    `SELECT id, titleAr, status, activatedAt, minimumReportingThreshold
+     FROM Campaign
+     WHERE status IN (${placeholders})
+     ORDER BY activatedAt ASC`
+  ).bind(...allowedStatuses).all();
+
+  const campaigns = campaignsResult.results as Record<string, unknown>[];
   if (campaigns.length === 0) {
     return { rows: [], eligibleCount: 0 };
   }
 
-  const campaignIds = campaigns.map((c) => c.id);
+  const campaignIds = campaigns.map((c) => c.id as string);
   const thresholdById = new Map(
-    campaigns.map((c) => [c.id, c.minimumReportingThreshold])
+    campaigns.map((c) => [c.id as string, c.minimumReportingThreshold as number])
   );
 
-  const eligibleSetting = await db.systemSetting.findUnique({
-    where: { key: "eligible_employees_count" },
-  });
+  const eligibleSetting = await db.prepare(
+    `SELECT valueAr FROM SystemSetting WHERE key = ?`
+  ).bind("eligible_employees_count").first() as Record<string, unknown> | null;
   const eligibleCount = eligibleSetting
-    ? parseInt(eligibleSetting.valueAr, 10) || 0
+    ? parseInt(eligibleSetting.valueAr as string, 10) || 0
     : 0;
 
-  const participation = await db.participationLedger.groupBy({
-    by: ["campaignId", "participationType"],
-    where: { campaignId: { in: campaignIds }, status: "submitted" },
-    _count: { _all: true },
-  });
+  const idPlaceholders = campaignIds.map(() => "?").join(",");
 
-  const distinctEvaluatorsRaw = await db.participationLedger.groupBy({
-    by: ["campaignId", "employeeHmac"],
-    where: {
-      campaignId: { in: campaignIds },
-      participationType: "executive",
-      status: "submitted",
-    },
-    _count: { _all: true },
-  });
-  const distinctEvaluatorsByCampaign = new Map<string, number>();
-  for (const row of distinctEvaluatorsRaw) {
-    distinctEvaluatorsByCampaign.set(
-      row.campaignId,
-      (distinctEvaluatorsByCampaign.get(row.campaignId) ?? 0) + 1
+  const [participationResult, distinctEvaluatorsResult, totalResponsesResult, responsesResult, snapshotsResult] = await Promise.all([
+    db.prepare(
+      `SELECT campaignId, participationType, COUNT(*) as cnt
+       FROM ParticipationLedger
+       WHERE campaignId IN (${idPlaceholders}) AND status = 'submitted'
+       GROUP BY campaignId, participationType`
+    ).bind(...campaignIds).all(),
+    db.prepare(
+      `SELECT campaignId, COUNT(DISTINCT employeeHmac) as cnt
+       FROM ParticipationLedger
+       WHERE campaignId IN (${idPlaceholders})
+         AND participationType = 'executive' AND status = 'submitted'
+       GROUP BY campaignId`
+    ).bind(...campaignIds).all(),
+    db.prepare(
+      `SELECT campaignId, COUNT(*) as cnt
+       FROM Response
+       WHERE campaignId IN (${idPlaceholders})
+       GROUP BY campaignId`
+    ).bind(...campaignIds).all(),
+    db.prepare(
+      `SELECT campaignId, executiveId, responseGroupId, questionSnapshotId, selectedScore
+       FROM Response
+       WHERE campaignId IN (${idPlaceholders}) AND responseType = 'executive'`
+    ).bind(...campaignIds).all(),
+    db.prepare(
+      `SELECT id, campaignId, dimension
+       FROM CampaignQuestionSnapshot
+       WHERE campaignId IN (${idPlaceholders}) AND section = 'leadership' AND dimension IS NOT NULL`
+    ).bind(...campaignIds).all(),
+  ]);
+
+  const participationByCampaignType = new Map<string, number>();
+  for (const p of participationResult.results as Record<string, unknown>[]) {
+    participationByCampaignType.set(
+      `${p.campaignId}::${p.participationType}`,
+      p.cnt as number
     );
   }
 
-  const totalResponses = await db.response.groupBy({
-    by: ["campaignId"],
-    where: { campaignId: { in: campaignIds } },
-    _count: { _all: true },
-  });
-  const totalByCampaign = new Map<string, number>();
-  for (const row of totalResponses) {
-    totalByCampaign.set(row.campaignId, row._count._all);
+  const distinctEvaluatorsByCampaign = new Map<string, number>();
+  for (const row of distinctEvaluatorsResult.results as Record<string, unknown>[]) {
+    distinctEvaluatorsByCampaign.set(
+      row.campaignId as string,
+      row.cnt as number
+    );
   }
 
-  const [responses, snapshots] = await Promise.all([
-    db.response.findMany({
-      where: {
-        campaignId: { in: campaignIds },
-        responseType: "executive",
-      },
-      select: {
-        campaignId: true,
-        executiveId: true,
-        responseGroupId: true,
-        questionSnapshotId: true,
-        selectedScore: true,
-      },
-    }),
-    db.campaignQuestionSnapshot.findMany({
-      where: {
-        campaignId: { in: campaignIds },
-        section: "leadership",
-        dimension: { not: null },
-      },
-      select: { id: true, dimension: true },
-    }),
-  ]);
+  const totalByCampaign = new Map<string, number>();
+  for (const row of totalResponsesResult.results as Record<string, unknown>[]) {
+    totalByCampaign.set(row.campaignId as string, row.cnt as number);
+  }
+
+  const responses = responsesResult.results as Record<string, unknown>[];
+  const snapshots = snapshotsResult.results as Record<string, unknown>[];
 
   const snapDim = new Map<string, string>();
-  for (const s of snapshots) snapDim.set(s.id, s.dimension ?? "");
+  for (const s of snapshots) snapDim.set(s.id as string, (s.dimension as string) ?? "");
 
   const evalCountByCampaignExec = new Map<string, Set<string>>();
   for (const r of responses) {
     const key = `${r.campaignId}::${r.executiveId ?? ""}`;
     const set = evalCountByCampaignExec.get(key) ?? new Set<string>();
-    set.add(r.responseGroupId);
+    set.add(r.responseGroupId as string);
     evalCountByCampaignExec.set(key, set);
   }
 
   const perExecDim = new Map<string, { sum: number; valid: number }>();
   for (const r of responses) {
-    const dim = snapDim.get(r.questionSnapshotId);
+    const dim = snapDim.get(r.questionSnapshotId as string);
     if (!dim) continue;
     const key = `${r.campaignId}::${r.executiveId ?? ""}::${dim}`;
     const acc = perExecDim.get(key) ?? { sum: 0, valid: 0 };
     if (r.selectedScore !== null) {
-      acc.sum += r.selectedScore;
+      acc.sum += r.selectedScore as number;
       acc.valid += 1;
     }
     perExecDim.set(key, acc);
@@ -184,37 +176,28 @@ async function computeTrendRows(
   }
 
   const rows: TrendRow[] = campaigns.map((c) => {
-    const envCount =
-      participation.find(
-        (p) => p.campaignId === c.id && p.participationType === "environment"
-      )?._count._all ?? 0;
-    const futureCount =
-      participation.find(
-        (p) => p.campaignId === c.id && p.participationType === "future"
-      )?._count._all ?? 0;
-    const execEvalCount =
-      participation.find(
-        (p) => p.campaignId === c.id && p.participationType === "executive"
-      )?._count._all ?? 0;
-    const distinctEvaluators =
-      distinctEvaluatorsByCampaign.get(c.id) ?? 0;
+    const cId = c.id as string;
+    const envCount = participationByCampaignType.get(`${cId}::environment`) ?? 0;
+    const futureCount = participationByCampaignType.get(`${cId}::future`) ?? 0;
+    const execEvalCount = participationByCampaignType.get(`${cId}::executive`) ?? 0;
+    const distinctEvaluators = distinctEvaluatorsByCampaign.get(cId) ?? 0;
     const participationRate =
       eligibleCount > 0
         ? Math.round((distinctEvaluators / eligibleCount) * 10000) / 100
         : null;
-    const totalResp = totalByCampaign.get(c.id) ?? 0;
+    const totalResp = totalByCampaign.get(cId) ?? 0;
 
     const dimAverages = LEADERSHIP_DIMENSIONS.map((d) => {
-      const acc = campaignDimAcc.get(`${c.id}::${d.key}`);
+      const acc = campaignDimAcc.get(`${cId}::${d.key}`);
       return acc && acc.count > 0
         ? Math.round((acc.sum / acc.count) * 100) / 100
         : null;
     });
 
     return {
-      titleAr: c.titleAr,
-      status: c.status,
-      activatedAt: c.activatedAt ? new Date(c.activatedAt).toISOString() : "",
+      titleAr: c.titleAr as string,
+      status: c.status as string,
+      activatedAt: c.activatedAt ? new Date(c.activatedAt as string).toISOString() : "",
       envCount,
       futureCount,
       execEvalCount,
@@ -228,7 +211,6 @@ async function computeTrendRows(
   return { rows, eligibleCount };
 }
 
-/** Build the UTF-8-BOM CSV body (Excel-compatible, CRLF). */
 function buildCsv(rows: TrendRow[]): string {
   const lines: string[] = [buildCsvRow(CSV_HEADERS)];
   for (const r of rows) {
@@ -250,16 +232,9 @@ function buildCsv(rows: TrendRow[]): string {
   return `\uFEFF${lines.join("\r\n")}\r\n`;
 }
 
-/**
- * Build an XLSX workbook with two sheets:
- *  - "ملخص المقارنة" — the same data as the CSV (one row per campaign).
- *  - "متوسطات الأبعاد" — a transposed view (one row per dimension, columns
- *    per campaign) for easier side-by-side comparison.
- */
 async function buildXlsx(rows: TrendRow[]): Promise<Buffer> {
   const XLSX = await import("xlsx");
 
-  // Sheet 1: per-campaign summary (mirrors the CSV).
   const summaryData = rows.map((r) => ({
     "اسم الحملة": r.titleAr,
     "الحالة": r.status,
@@ -283,7 +258,6 @@ async function buildXlsx(rows: TrendRow[]): Promise<Buffer> {
     ...LEADERSHIP_DIMENSIONS.map(() => ({ wch: 14 })),
   ];
 
-  // Sheet 2: transposed — one row per dimension, columns per campaign.
   const dimData = LEADERSHIP_DIMENSIONS.map((d, dimIdx) => {
     const row: Record<string, string | number | null> = {
       "البُعد": d.labelAr,
@@ -314,15 +288,7 @@ async function buildXlsx(rows: TrendRow[]): Promise<Buffer> {
 /**
  * GET /api/admin/reports/trend/export?format=csv|xlsx&status=all|active|closed
  *
- * Exports the trend/comparison view.
- *  - `csv`  → UTF-8 BOM, CRLF, Excel-compatible.
- *  - `xlsx` → 2-sheet RTL workbook (summary + transposed dimensions).
- *
- * One row per campaign with participation counts + participation rate +
- * per-dimension averages. Respects each campaign's per-exec threshold.
- * NO employee identifiers — aggregate numbers only.
- *
- * Auth required (both roles). Audited as `report.export`.
+ * Exports the trend/comparison view. Auth required (both roles). Audited as `report.export`.
  */
 export const GET = apiHandler(
   async (request: NextRequest) => {
@@ -372,7 +338,6 @@ export const GET = apiHandler(
       });
     }
 
-    // format === "xlsx"
     const buf = await buildXlsx(rows);
     return new NextResponse(new Uint8Array(buf), {
       status: 200,

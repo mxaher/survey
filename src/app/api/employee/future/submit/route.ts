@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { fail, noStore, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
@@ -38,10 +37,10 @@ const BodySchema = z.object({
  *   4. Validate each `selectedValue` exists in the snapshot's option set;
  *      validate `multi_choice` selections count ≤ snapshot.maxSelections.
  *   5. (selectedScore is null for future — no numeric scale.)
- *   6. `db.$transaction`:
+ *   6. `db.batch`:
  *      - Insert ParticipationLedger (participationType='future',
  *        scopeKey='future', status='submitted').
- *        P2002 → 409 with MESSAGES.duplicateCampaign.
+ *        UNIQUE constraint → 409 with MESSAGES.duplicateCampaign.
  *      - Fresh responseGroupId.
  *      - Insert one Response row per (snapshot, selectedValue) pair.
  *   7. Return MESSAGES.submissionSuccess. No internal tokens exposed.
@@ -49,6 +48,8 @@ const BodySchema = z.object({
  * NEVER returns `employeeHmac`. `Cache-Control: no-store` on all paths.
  */
 export const POST = apiHandler(async (request: NextRequest) => {
+  const db = getDB();
+
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
 
@@ -69,10 +70,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
 
   // Load campaign.
-  const campaign = await db.campaign.findUnique({
-    where: { id: body.campaignId },
-    select: { id: true, status: true, startsAt: true, endsAt: true },
-  });
+  const campaign = await db.prepare(
+    "SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?"
+  ).bind(body.campaignId).first<{ id: string; status: string; startsAt: string; endsAt: string }>();
   if (!campaign || campaign.status !== "active") {
     return fail(MESSAGES.campaignClosed, 400);
   }
@@ -83,14 +83,23 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
 
   // Load all future-section frozen snapshots.
-  const snapshots = await db.campaignQuestionSnapshot.findMany({
-    where: { campaignId: campaign.id, section: "future" },
-    include: { options: true },
-  });
-  const snapshotMap = new Map(snapshots.map((s) => [s.id, s]));
+  const snapshotsRows = await db.prepare(
+    `SELECT id, isRequired, questionType, maxSelections FROM CampaignQuestionSnapshot
+     WHERE campaignId = ? AND section = 'future'`
+  ).bind(campaign.id).all<{ id: string; isRequired: number; questionType: string; maxSelections: number | null }>();
+
+  // Load options for each snapshot.
+  const snapshotMap = new Map<string, { id: string; isRequired: number; questionType: string; maxSelections: number | null; options: { value: string }[] }>();
+  for (const snap of snapshotsRows.results) {
+    const opts = await db.prepare(
+      "SELECT value FROM QuestionSnapshotOption WHERE snapshotId = ?"
+    ).bind(snap.id).all<{ value: string }>();
+    snapshotMap.set(snap.id, { ...snap, options: opts.results });
+  }
 
   // 3. Validate every required future snapshot has at least one selected value.
   const answeredIds = new Set(body.answers.map((a) => a.questionSnapshotId));
+  const snapshots = Array.from(snapshotMap.values());
   const missingRequired = snapshots.filter(
     (s) => s.isRequired && !answeredIds.has(s.id)
   );
@@ -143,44 +152,29 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
 
   // 6. Atomic insert.
+  const responseGroupId = newResponseGroupId();
   try {
-    await db.$transaction(async (tx) => {
-      // 6a. Insert ledger row first — duplicate gate (P2002 on race).
-      await tx.participationLedger.create({
-        data: {
-          campaignId: campaign.id,
-          employeeHmac,
-          participationType: "future",
-          scopeKey: "future",
-          status: "submitted",
-          submittedAt: now,
-        },
-      });
+    // 6a. Build ledger insert statement.
+    const ledgerStmt = db.prepare(
+      `INSERT INTO ParticipationLedger (campaignId, employeeHmac, participationType, scopeKey, status, submittedAt)
+       VALUES (?, ?, 'future', 'future', 'submitted', ?)`
+    ).bind(campaign.id, employeeHmac, now);
 
-      // 6b. Fresh responseGroupId — random, not identity-derived.
-      const responseGroupId = newResponseGroupId();
+    // 6b. Build response insert statements — one per (snapshot, selectedValue) pair.
+    //     selectedScore is null — future questions are categorical.
+    const responseStmts = responseRows.map((r) =>
+      db.prepare(
+        `INSERT INTO Response (campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType, submittedAt)
+         VALUES (?, null, ?, ?, ?, null, 'future', ?)`
+      ).bind(campaign.id, responseGroupId, r.questionSnapshotId, r.selectedValue, now)
+    );
 
-      // 6c. One Response row per (snapshot, selectedValue) pair.
-      //     selectedScore is null — future questions are categorical.
-      await tx.response.createMany({
-        data: responseRows.map((r) => ({
-          campaignId: campaign.id,
-          executiveId: null,
-          responseGroupId,
-          questionSnapshotId: r.questionSnapshotId,
-          selectedValue: r.selectedValue,
-          selectedScore: null,
-          responseType: "future",
-          submittedAt: now,
-        })),
-      });
-
-      return responseGroupId;
-    });
+    // 6c. Execute as a batch.
+    await db.batch([ledgerStmt, ...responseStmts]);
   } catch (err) {
     if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
+      err instanceof Error &&
+      err.message?.includes("UNIQUE constraint failed")
     ) {
       return fail(MESSAGES.duplicateCampaign, 409);
     }

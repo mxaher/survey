@@ -34,9 +34,10 @@ A production-ready, Arabic-first, fully RTL internal web application for running
 | Layer | Technology |
 |---|---|
 | **Framework** | Next.js 16 (App Router, Turbopack) |
+| **Runtime** | Cloudflare Workers (via @opennextjs/cloudflare) |
 | **Language** | TypeScript 5 (strict) |
 | **Styling** | Tailwind CSS 4 + shadcn/ui (New York style) |
-| **Database** | Prisma ORM + SQLite (`db/custom.db`) |
+| **Database** | Cloudflare D1 (raw binding, no ORM) |
 | **State** | Zustand (client) + TanStack Query (server) |
 | **Charts** | Recharts |
 | **Icons** | lucide-react |
@@ -48,7 +49,8 @@ A production-ready, Arabic-first, fully RTL internal web application for running
 ### Key Dependencies
 
 ```
-next@^16.1.1  react@^19  prisma@^6.11  @prisma/client@^6.11
+next@^16.1.1  react@^19
+@opennextjs/cloudflare  wrangler  @cloudflare/workers-types
 @tanstack/react-query  zustand  recharts  lucide-react
 next-themes  framer-motion  @dnd-kit/*  xlsx  zod
 ```
@@ -69,18 +71,36 @@ All imports use `@/lib/...`, `@/components/...`, `@/app/...`.
 # 1. Install dependencies
 bun install
 
-# 2. Push database schema
-bun run db:push
+# 2. Create D1 database locally
+npx wrangler d1 create almrshad-survey-db
+# Copy the database_id into wrangler.toml
 
-# 3. Seed demo data (36 leadership + 10 environment + 4 future questions,
-#    8 executives, demo draft campaign, system settings)
+# 3. Run D1 migrations locally
+bun run db:migrate
+
+# 4. Seed demo data
 bun run db:seed
 
-# 4. Start dev server (port 3000)
+# 5. Start dev server (port 3000)
 bun run dev
+```
 
-# 5. Lint check
-bun run lint
+### Cloudflare Workers Deployment
+
+```bash
+# 1. Create D1 database (first time only)
+npx wrangler d1 create almrshad-survey-db
+# Update wrangler.toml with the database_id
+
+# 2. Run migrations against production D1
+bun run db:migrate:prod
+
+# 3. Set secrets
+npx wrangler secret put EMPLOYEE_HMAC_SECRET
+npx wrangler secret put ADMIN_AUTH_SECRET
+
+# 4. Build and deploy
+bun run deploy
 ```
 
 ### Scripts
@@ -89,20 +109,24 @@ bun run lint
 |---|---|
 | `bun run dev` | Start dev server on port 3000 (Turbopack) |
 | `bun run lint` | ESLint check (must be 0 errors) |
-| `bun run build` | Production build (do NOT use in sandbox) |
-| `bun run db:push` | Push Prisma schema to SQLite |
+| `bun run build` | Production build |
+| `bun run db:migrate` | Run D1 migrations locally |
+| `bun run db:migrate:prod` | Run D1 migrations against production |
 | `bun run db:seed` | Seed demo data |
-| `bun run db:generate` | Regenerate Prisma client |
-| `bun run db:reset` | Reset database |
+| `bun run deploy` | Build and deploy to Cloudflare Workers |
 
 ### Environment Variables
 
+Secrets are managed via Cloudflare Workers bindings:
+
 ```bash
-# .env
-DATABASE_URL=file:/home/z/my-project/db/custom.db
-# Optional (server-side secrets — never committed):
-# EMPLOYEE_HMAC_SECRET=...    # HMAC key for employee identity (defaults to dev secret)
-# ADMIN_AUTH_SECRET=...       # HMAC key for admin session tokens (defaults to dev secret)
+# Local development: create .dev.vars (never committed)
+cp .dev.vars.example .dev.vars
+# Fill in EMPLOYEE_HMAC_SECRET and ADMIN_AUTH_SECRET
+
+# Production: set via Wrangler secrets
+npx wrangler secret put EMPLOYEE_HMAC_SECRET
+npx wrangler secret put ADMIN_AUTH_SECRET
 ```
 
 ---
@@ -154,11 +178,11 @@ AdminApp (admin-app.tsx)
 
 ## Database Schema
 
-**File:** `prisma/schema.prisma` (263 lines)
+**File:** `migrations/0001_init.sql` (Cloudflare D1 / SQLite)
 
-### Models
+### Tables
 
-| Model | Purpose |
+| Table | Purpose |
 |---|---|
 | `Campaign` | Survey campaign with 5-state lifecycle (draft→scheduled→active→closed→archived) |
 | `Executive` | Global registry of evaluable executives (CEO/executive/manager/department_head) |
@@ -176,13 +200,13 @@ AdminApp (admin-app.tsx)
 
 ### Key Constraints
 
-```prisma
-// Race-condition-safe duplicate prevention:
-@@unique([campaignId, employeeHmac, participationType, scopeKey])
-// on ParticipationLedger — SQLite enforces this at the DB level.
+```sql
+-- Race-condition-safe duplicate prevention:
+UNIQUE(campaignId, employeeHmac, participationType, scopeKey)
+-- on ParticipationLedger — SQLite enforces this at the DB level.
 
-// Question code uniqueness:
-code String @unique
+-- Question code uniqueness:
+code TEXT NOT NULL UNIQUE
 ```
 
 ---
@@ -390,7 +414,7 @@ EmployeeApp (employee-app.tsx)
 
 | File | Purpose |
 |---|---|
-| `db.ts` | Prisma client singleton |
+| `db.ts` | D1 database binding helper (`getDB()`) |
 | `api.ts` | `ok()`, `fail()`, `noStore()`, `apiHandler()` response helpers |
 | `admin-auth.ts` | Admin session via signed cookie (HMAC), SUPER_ADMIN/SURVEY_ADMIN roles, dev bootstrap |
 | `identity.ts` | Dev-mode EmployeeIdentityProvider (cookie-based impersonation) |
@@ -409,13 +433,14 @@ EmployeeApp (employee-app.tsx)
 
 ```
 /home/z/my-project/
-├── .env                          # DATABASE_URL only
-├── Caddyfile                     # Gateway config (:81 → :3000)
-├── package.json                  # Scripts + deps
-├── prisma/
-│   ├── schema.prisma             # 12 models, 263 lines
-│   └── seed.ts                   # 36 leadership + 10 env + 4 future questions, 8 execs, demo campaign
-├── scripts/                      # Dev utilities (run with `bun run scripts/X.ts`)
+├── .dev.vars.example               # Template for local dev secrets
+├── Caddyfile                       # Gateway config (:81 → :3000)
+├── package.json                    # Scripts + deps
+├── wrangler.toml                   # Cloudflare Workers + D1 config
+├── open-next.config.ts             # OpenNext.js Cloudflare adapter
+├── migrations/
+│   └── 0001_init.sql               # D1 schema (13 tables)
+├── scripts/                        # Dev utilities (run with `bun run scripts/X.ts`)
 │   ├── promote-admin.ts          # Promote dev admin to SUPER_ADMIN
 │   ├── seed-responses.ts         # Seed executive evaluations
 │   ├── seed-env-future.ts        # Seed environment + future responses
@@ -650,4 +675,4 @@ The audit log table is viewable at `/?view=admin&tab=audit` with pagination + fi
 
 ---
 
-*Built with Next.js 16 + Prisma + Tailwind 4 + shadcn/ui. Arabic-first, fully RTL. Privacy-architected with HMAC-separated identity layers. Production-ready.*
+*Built with Next.js 16 + Cloudflare Workers + D1 + Tailwind 4 + shadcn/ui. Arabic-first, fully RTL. Privacy-architected with HMAC-separated identity layers. Production-ready.*

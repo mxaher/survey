@@ -1,0 +1,11 @@
+# Cloudflare Workers local development secrets
+# Copy this file to .dev.vars and fill in the values
+# NEVER commit .dev.vars to version control
+
+# HMAC secret for employee identity hashing
+# In production, set via: wrangler secret put EMPLOYEE_HMAC_SECRET
+EMPLOYEE_HMAC_SECRET=
+
+# Admin session signing secret
+# In production, set via: wrangler secret put ADMIN_AUTH_SECRET
+ADMIN_AUTH_SECRET=

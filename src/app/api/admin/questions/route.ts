@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -21,48 +21,76 @@ const QUESTION_SECTION_KEYS = QUESTION_SECTIONS.map((s) => s.key);
  *   - ?section=environment|leadership|future
  *   - ?isActive=true|false
  *   - ?search=<text>  (matches code or questionAr)
- * Each row includes a `_count.campaignConfig` so the UI can show how many
+ * Each row includes a `campaignConfigCount` so the UI can show how many
  * campaigns use it. Ordered by `displayOrder asc`.
  */
 export const GET = apiHandler(async (request: NextRequest) => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+  const db = getDB();
   const url = request.nextUrl;
   const section = url.searchParams.get("section") ?? undefined;
   const isActiveStr = url.searchParams.get("isActive");
   const search = url.searchParams.get("search") ?? undefined;
 
-  const where: {
-    section?: string;
-    isActive?: boolean;
-    OR?: Array<Record<string, unknown>>;
-  } = {};
+  const conditions: string[] = [];
+  const params: unknown[] = [];
 
   if (section && QUESTION_SECTION_KEYS.includes(section as never)) {
-    where.section = section;
+    conditions.push("q.section = ?");
+    params.push(section);
   }
-  if (isActiveStr === "true") where.isActive = true;
-  else if (isActiveStr === "false") where.isActive = false;
+
+  if (isActiveStr === "true") {
+    conditions.push("q.isActive = 1");
+  } else if (isActiveStr === "false") {
+    conditions.push("q.isActive = 0");
+  }
 
   if (search && search.trim() !== "") {
     const s = search.trim();
-    where.OR = [
-      { code: { contains: s } },
-      { questionAr: { contains: s } },
-    ];
+    conditions.push("(q.code LIKE ? OR q.questionAr LIKE ?)");
+    params.push(`%${s}%`, `%${s}%`);
   }
 
-  const questions = await db.question.findMany({
-    where,
-    orderBy: [{ displayOrder: "asc" }, { code: "asc" }],
-    include: {
-      _count: { select: { campaignConfig: true } },
-    },
-  });
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const { results: questions } = await db
+    .prepare(
+      `SELECT q.id, q.code, q.questionAr, q.questionType, q.section,
+              q.dimension, q.isRequired, q.displayOrder, q.maxSelections,
+              q.version, q.parentQuestionId, q.isCurrent, q.isActive,
+              q.deletedAt, q.createdAt, q.updatedAt
+       FROM Question q
+       ${where}
+       ORDER BY q.displayOrder ASC, q.code ASC`
+    )
+    .bind(...params)
+    .all();
+
+  const questionIds = questions.map((q: Record<string, unknown>) => q.id as string);
+
+  let configCounts: Record<string, number> = {};
+  if (questionIds.length > 0) {
+    const placeholders = questionIds.map(() => "?").join(",");
+    const { results: counts } = await db
+      .prepare(
+        `SELECT questionId, COUNT(*) as cnt
+         FROM CampaignQuestionConfig
+         WHERE questionId IN (${placeholders})
+         GROUP BY questionId`
+      )
+      .bind(...questionIds)
+      .all();
+
+    for (const row of counts as Record<string, unknown>[]) {
+      configCounts[row.questionId as string] = row.cnt as number;
+    }
+  }
 
   return ok(
-    questions.map((q) => ({
+    questions.map((q: Record<string, unknown>) => ({
       id: q.id,
       code: q.code,
       questionAr: q.questionAr,
@@ -79,7 +107,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
       deletedAt: q.deletedAt,
       createdAt: q.createdAt,
       updatedAt: q.updatedAt,
-      campaignConfigCount: q._count.campaignConfig,
+      campaignConfigCount: configCounts[q.id as string] ?? 0,
     }))
   );
 });
@@ -149,11 +177,13 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const input = parsed.data;
 
+  const db = getDB();
+
   // Uniqueness check on code.
-  const existing = await db.question.findUnique({
-    where: { code: input.code },
-    select: { id: true, deletedAt: true },
-  });
+  const existing = await db
+    .prepare("SELECT id FROM Question WHERE code = ?")
+    .bind(input.code)
+    .first();
   if (existing) {
     return fail(
       "رمز السؤال مستخدم مسبقاً. يرجى اختيار رمز فريد.",
@@ -161,82 +191,102 @@ export const POST = apiHandler(async (request: NextRequest) => {
     );
   }
 
-  const created = await db.$transaction(async (tx) => {
-    const q = await tx.question.create({
-      data: {
-        code: input.code,
-        questionAr: input.questionAr,
-        questionType: input.questionType,
-        section: input.section,
-        dimension: input.dimension ?? null,
-        isRequired: input.isRequired,
-        displayOrder: input.displayOrder,
-        maxSelections: input.maxSelections ?? null,
-        isActive: input.isActive,
-        version: 1,
-      },
-    });
+  const questionId = crypto.randomUUID();
+  const sortedOptions = [...input.options].sort(
+    (a, b) => a.displayOrder - b.displayOrder
+  );
 
-    if (input.options.length > 0) {
-      // Insert all options in displayOrder for stability.
-      const sorted = [...input.options].sort(
-        (a, b) => a.displayOrder - b.displayOrder
-      );
-      for (const opt of sorted) {
-        await tx.questionOption.create({
-          data: {
-            questionId: q.id,
-            value: opt.value,
-            labelAr: opt.labelAr,
-            score: opt.score ?? null,
-            displayOrder: opt.displayOrder,
-            isActive: opt.isActive,
-          },
-        });
-      }
-    }
+  const statements: any[] = [
+    db
+      .prepare(
+        `INSERT INTO Question (id, code, questionAr, questionType, section, dimension,
+         isRequired, displayOrder, maxSelections, isActive, version, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+      )
+      .bind(
+        questionId,
+        input.code,
+        input.questionAr,
+        input.questionType,
+        input.section,
+        input.dimension ?? null,
+        input.isRequired ? 1 : 0,
+        input.displayOrder,
+        input.maxSelections ?? null,
+        input.isActive ? 1 : 0
+      ),
+  ];
 
-    return q;
-  });
+  for (const opt of sortedOptions) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          crypto.randomUUID(),
+          questionId,
+          opt.value,
+          opt.labelAr,
+          opt.score ?? null,
+          opt.displayOrder,
+          opt.isActive ? 1 : 0
+        )
+    );
+  }
+
+  await db.batch(statements);
 
   // Re-fetch with options for the response.
-  const withOptions = await db.question.findUnique({
-    where: { id: created.id },
-    include: {
-      options: { orderBy: { displayOrder: "asc" } },
-      _count: { select: { campaignConfig: true } },
-    },
-  });
+  const q = await db
+    .prepare("SELECT * FROM Question WHERE id = ?")
+    .bind(questionId)
+    .first();
+
+  const { results: options } = await db
+    .prepare(
+      "SELECT id, value, labelAr, score, displayOrder, isActive FROM QuestionOption WHERE questionId = ? ORDER BY displayOrder ASC"
+    )
+    .bind(questionId)
+    .all();
+
+  const configCountRow = await db
+    .prepare(
+      "SELECT COUNT(*) as cnt FROM CampaignQuestionConfig WHERE questionId = ?"
+    )
+    .bind(questionId)
+    .first();
 
   await writeAudit({
     adminUserId: admin.adminId,
     action: "question.create",
     entityType: "question",
-    entityId: created.id,
+    entityId: questionId,
     metadata: {
-      code: created.code,
-      questionType: created.questionType,
-      section: created.section,
-      optionsCount: withOptions?.options.length ?? 0,
+      code: input.code,
+      questionType: input.questionType,
+      section: input.section,
+      optionsCount: options.length,
     },
   });
 
   return ok(
     {
-      id: withOptions?.id,
-      code: withOptions?.code,
-      questionAr: withOptions?.questionAr,
-      questionType: withOptions?.questionType,
-      section: withOptions?.section,
-      dimension: withOptions?.dimension,
-      isRequired: withOptions?.isRequired,
-      displayOrder: withOptions?.displayOrder,
-      maxSelections: withOptions?.maxSelections,
-      version: withOptions?.version,
-      isActive: withOptions?.isActive,
-      createdAt: withOptions?.createdAt,
-      updatedAt: withOptions?.updatedAt,
-      options: withOptions?.options.map((o) => ({
+      id: q!.id,
+      code: q!.code,
+      questionAr: q!.questionAr,
+      questionType: q!.questionType,
+      section: q!.section,
+      dimension: q!.dimension,
+      isRequired: q!.isRequired,
+      displayOrder: q!.displayOrder,
+      maxSelections: q!.maxSelections,
+      version: q!.version,
+      isActive: q!.isActive,
+      createdAt: q!.createdAt,
+      updatedAt: q!.updatedAt,
+      options: options.map((o: Record<string, unknown>) => ({
         id: o.id,
         value: o.value,
         labelAr: o.labelAr,
@@ -244,7 +294,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
         displayOrder: o.displayOrder,
         isActive: o.isActive,
       })),
-      campaignConfigCount: withOptions?._count.campaignConfig ?? 0,
+      campaignConfigCount: (configCountRow?.cnt as number) ?? 0,
     },
     { status: 201 }
   );

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -7,32 +7,16 @@ import { FAVORABLE_VALUES } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
-interface EnvResponseRow {
-  questionSnapshotId: string;
-  responseGroupId: string;
-  selectedValue: string;
-  selectedScore: number | null;
-}
-
 /**
  * GET /api/admin/reports/[campaignId]/environment
  *
  * Aggregated environment report. Auth required (both roles).
  *
  * For each environment question snapshot:
- *   - count              (total responses for this question)
- *   - validCount         (responses where selectedScore !== null)
- *   - averageScore       (sum(selectedScore) / validCount | null)
- *   - distribution       ({ value, labelAr, count }[] — one per snapshot option)
- *   - favorableRate      (FAVORABLE_VALUES count / validCount | null)
- *   - notApplicableCount (selectedValue === 'not_applicable' count)
+ *   - count, validCount, averageScore, distribution, favorableRate, notApplicableCount
  *
- * Threshold suppression (spec §13.6): if the total environment responses
- * for this campaign are below `minimumReportingThreshold`, the whole
- * report is suppressed — return `{ suppressed: true, message }` and
- * nothing else.
- *
- * NEVER exposes raw Response rows or any employee identifier.
+ * Threshold suppression: if distinct submitters < minimumReportingThreshold,
+ * the whole report is suppressed.
  */
 export const GET = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ campaignId: string }> }) => {
@@ -40,50 +24,51 @@ export const GET = apiHandler(
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
     const { campaignId } = await ctx.params;
+    const db = getDB();
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: {
-        id: true,
-        titleAr: true,
-        status: true,
-        minimumReportingThreshold: true,
-        enableEnvironmentSurvey: true,
-      },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, titleAr, status, minimumReportingThreshold, enableEnvironmentSurvey
+       FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    // Pull all environment snapshots (with options) + all environment
-    // responses in two queries. Aggregate in JS to avoid N+1.
-    const [snapshots, responses] = await Promise.all([
-      db.campaignQuestionSnapshot.findMany({
-        where: { campaignId, section: "environment" },
-        include: { options: true },
-        orderBy: { displayOrder: "asc" },
-      }),
-      db.response.findMany({
-        where: { campaignId, responseType: "environment" },
-        select: {
-          questionSnapshotId: true,
-          responseGroupId: true,
-          selectedValue: true,
-          selectedScore: true,
-        },
-      }),
+    const threshold = campaign.minimumReportingThreshold as number;
+
+    const [snapshotsResult, responsesResult, optionsResult] = await Promise.all([
+      db.prepare(
+        `SELECT id, questionCode, questionAr, questionType, section, dimension, isRequired, displayOrder, maxSelections
+         FROM CampaignQuestionSnapshot
+         WHERE campaignId = ? AND section = 'environment'
+         ORDER BY displayOrder ASC`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT questionSnapshotId, responseGroupId, selectedValue, selectedScore
+         FROM Response
+         WHERE campaignId = ? AND responseType = 'environment'`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT cos.id AS snapshotId, cos.value, cos.labelAr, cos.score, cos.displayOrder
+         FROM CampaignQuestionOptionSnapshot cos
+         JOIN CampaignQuestionSnapshot cs ON cs.id = cos.campaignQuestionSnapshotId
+         WHERE cs.campaignId = ? AND cs.section = 'environment'
+         ORDER BY cos.displayOrder ASC`
+      ).bind(campaignId).all(),
     ]);
 
-    const threshold = campaign.minimumReportingThreshold;
+    const snapshots = snapshotsResult.results as Record<string, unknown>[];
+    const responses = responsesResult.results as Record<string, unknown>[];
+    const allOptions = optionsResult.results as Record<string, unknown>[];
 
-    // Whole-section suppression: based on DISTINCT submitters
-    // (responseGroupId), NOT raw response rows. One environment submission
-    // produces N response rows (one per question), so `responses.length`
-    // over-counts by a factor of N. Using distinct responseGroupId gives
-    // the true number of employees who submitted this section — which is
-    // what the threshold is meant to protect (spec §16: "Minimum sample
-    // size: default 5 ... Below threshold: hide detailed results ... to
-    // protect participant confidentiality").
+    const optionsBySnapshot = new Map<string, Record<string, unknown>[]>();
+    for (const opt of allOptions) {
+      const snapId = opt.snapshotId as string;
+      if (!optionsBySnapshot.has(snapId)) optionsBySnapshot.set(snapId, []);
+      optionsBySnapshot.get(snapId)!.push(opt);
+    }
+
+    // Whole-section suppression based on DISTINCT responseGroupId
     const distinctSubmitters = new Set(
-      responses.map((r) => r.responseGroupId)
+      responses.map((r) => r.responseGroupId as string)
     ).size;
 
     if (distinctSubmitters < threshold) {
@@ -97,26 +82,28 @@ export const GET = apiHandler(
       });
     }
 
-    // Group responses by questionSnapshotId.
-    const bySnapshot = new Map<string, EnvResponseRow[]>();
+    // Group responses by questionSnapshotId
+    const bySnapshot = new Map<string, Record<string, unknown>[]>();
     for (const r of responses) {
-      const arr = bySnapshot.get(r.questionSnapshotId) ?? [];
+      const snapId = r.questionSnapshotId as string;
+      const arr = bySnapshot.get(snapId) ?? [];
       arr.push(r);
-      bySnapshot.set(r.questionSnapshotId, arr);
+      bySnapshot.set(snapId, arr);
     }
 
     const questions = snapshots.map((snap) => {
-      const rows = bySnapshot.get(snap.id) ?? [];
+      const snapId = snap.id as string;
+      const rows = bySnapshot.get(snapId) ?? [];
       const count = rows.length;
       const validRows = rows.filter((r) => r.selectedScore !== null);
       const validCount = validRows.length;
       const sumScore = validRows.reduce(
-        (acc, r) => acc + (r.selectedScore ?? 0),
+        (acc, r) => acc + ((r.selectedScore as number) ?? 0),
         0
       );
       const averageScore = validCount > 0 ? sumScore / validCount : null;
       const favorableCount = rows.filter((r) =>
-        FAVORABLE_VALUES.has(r.selectedValue)
+        FAVORABLE_VALUES.has(r.selectedValue as string)
       ).length;
       const favorableRate =
         validCount > 0 ? favorableCount / validCount : null;
@@ -124,47 +111,33 @@ export const GET = apiHandler(
         (r) => r.selectedValue === "not_applicable"
       ).length;
 
-      // Distribution: one entry per snapshot option (sorted by displayOrder),
-      // plus a catch-all "other" bucket for any responses whose value
-      // doesn't match an option (defensive — shouldn't happen in practice).
       const optionBuckets = new Map<string, number>();
       for (const r of rows) {
-        optionBuckets.set(
-          r.selectedValue,
-          (optionBuckets.get(r.selectedValue) ?? 0) + 1
-        );
+        const val = r.selectedValue as string;
+        optionBuckets.set(val, (optionBuckets.get(val) ?? 0) + 1);
       }
 
-      const distribution = snap.options
+      const snapOpts = (optionsBySnapshot.get(snapId) ?? [])
         .slice()
-        .sort((a, b) => a.displayOrder - b.displayOrder)
-        .map((opt) => ({
-          value: opt.value,
-          labelAr: opt.labelAr,
-          count: optionBuckets.get(opt.value) ?? 0,
-        }));
+        .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number));
 
-      // Catch-all: any response whose value isn't in the snapshot's
-      // option set is bucketed individually with its raw value as the
-      // labelAr (defensive — shouldn't happen in practice).
-      const knownValues = new Set(snap.options.map((o) => o.value));
+      const distribution = snapOpts.map((opt) => ({
+        value: opt.value as string,
+        labelAr: opt.labelAr as string,
+        count: optionBuckets.get(opt.value as string) ?? 0,
+      }));
+
+      const knownValues = new Set(snapOpts.map((o) => o.value as string));
       for (const [value, c] of optionBuckets) {
         if (!knownValues.has(value)) {
           distribution.push({ value, labelAr: value, count: c });
         }
       }
 
-      // Per-question threshold suppression: if this individual question
-      // has fewer responses than the campaign threshold, mark it as
-      // suppressed so the UI can mask the detailed numbers (avg/dist/etc)
-      // while still showing the question text + count. This is stricter
-      // than the whole-section suppression above and protects against
-      // re-identification via low-N questions inside an otherwise
-      // qualifying section.
       const perQuestionSuppressed = count < threshold;
 
       return {
-        snapshotId: snap.id,
+        snapshotId: snapId,
         questionCode: snap.questionCode,
         questionAr: snap.questionAr,
         dimension: snap.dimension,

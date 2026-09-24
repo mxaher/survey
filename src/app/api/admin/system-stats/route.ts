@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  *
  * Lightweight system-health snapshot for the dashboard widget.
  * Auth required (both roles). Returns:
- *   - dbSizeBytes: size of the SQLite database file (from Prisma's url).
+ *   - dbSizeBytes: size of the D1 database (approximate from pragma).
  *   - dbSizeLabel: human-readable size (KB / MB).
  *   - tableCounts: row counts for each major table.
  *   - lastAuditAt: ISO timestamp of the most recent audit log entry.
@@ -22,19 +22,17 @@ export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
-  // DB file size — read from the DATABASE_URL env (file: path).
-  // Fall back to 0 if we can't resolve the path (e.g., in-memory).
+  const db = getDB();
+
+  // DB size — D1 exposes page_count and page_size via pragma.
   let dbSizeBytes = 0;
-  const dbUrl = process.env.DATABASE_URL ?? "";
-  const match = dbUrl.match(/file:(.+)/);
-  if (match) {
-    try {
-      const fs = await import("fs");
-      const stat = await fs.promises.stat(match[1]);
-      dbSizeBytes = stat.size;
-    } catch {
-      // File not found or not accessible — leave at 0.
-    }
+  try {
+    const row = await db
+      .prepare("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+      .first<{ size: number }>();
+    dbSizeBytes = row?.size ?? 0;
+  } catch {
+    // Pragma not available — leave at 0.
   }
 
   const dbSizeLabel = formatBytes(dbSizeBytes);
@@ -51,36 +49,35 @@ export const GET = apiHandler(async () => {
     systemSettings,
     snapshots,
   ] = await Promise.all([
-    db.campaign.count(),
-    db.executive.count(),
-    db.question.count(),
-    db.response.count(),
-    db.participationLedger.count(),
-    db.auditLog.count(),
-    db.adminUser.count(),
-    db.systemSetting.count(),
-    db.campaignQuestionSnapshot.count(),
+    db.prepare("SELECT COUNT(*) as cnt FROM Campaign").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM Executive").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM Question").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM Response").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM ParticipationLedger").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM AuditLog").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM AdminUser").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM SystemSetting").first<{ cnt: number }>(),
+    db.prepare("SELECT COUNT(*) as cnt FROM CampaignQuestionSnapshot").first<{ cnt: number }>(),
   ]);
 
   // Last audit entry timestamp.
-  const lastAudit = await db.auditLog.findFirst({
-    orderBy: { createdAt: "desc" },
-    select: { createdAt: true },
-  });
+  const lastAudit = await db
+    .prepare("SELECT createdAt FROM AuditLog ORDER BY createdAt DESC LIMIT 1")
+    .first<{ createdAt: string }>();
 
   return ok({
     dbSizeBytes,
     dbSizeLabel,
     tableCounts: {
-      campaigns,
-      executives,
-      questions,
-      responses,
-      participationLedger,
-      auditLogs,
-      adminUsers,
-      systemSettings,
-      snapshots,
+      campaigns: campaigns?.cnt ?? 0,
+      executives: executives?.cnt ?? 0,
+      questions: questions?.cnt ?? 0,
+      responses: responses?.cnt ?? 0,
+      participationLedger: participationLedger?.cnt ?? 0,
+      auditLogs: auditLogs?.cnt ?? 0,
+      adminUsers: adminUsers?.cnt ?? 0,
+      systemSettings: systemSettings?.cnt ?? 0,
+      snapshots: snapshots?.cnt ?? 0,
     },
     lastAuditAt: lastAudit?.createdAt ?? null,
     serverTime: new Date().toISOString(),

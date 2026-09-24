@@ -1,13 +1,10 @@
-import { PrismaClient } from '@prisma/client'
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 
-const globalForPrisma = globalThis as unknown as {
-  prisma: PrismaClient | undefined
+/**
+ * Get the D1 database binding for the current request.
+ * Must be called within a Cloudflare Workers request context.
+ */
+export function getDB() {
+  const { env } = getCloudflareContext();
+  return env.DB;
 }
-
-export const db =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: ['error', 'warn'],
-  })
-
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = db

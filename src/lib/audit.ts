@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 
 /**
  * Append a safe audit log entry. NEVER include employee answers or any
@@ -17,14 +17,18 @@ export async function writeAudit(params: {
       ? JSON.stringify(params.metadata)
       : null;
 
-  await db.auditLog.create({
-    data: {
-      adminUserId: params.adminUserId ?? null,
-      action: params.action,
-      entityType: params.entityType,
-      entityId: params.entityId ?? null,
-      campaignId: params.campaignId ?? null,
-      metadataJson: meta,
-    },
-  });
+  const db = getDB();
+  const id = crypto.randomUUID();
+  await db.prepare(
+    `INSERT INTO AuditLog (id, adminUserId, action, entityType, entityId, campaignId, metadataJson, createdAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).bind(
+    id,
+    params.adminUserId ?? null,
+    params.action,
+    params.entityType,
+    params.entityId ?? null,
+    params.campaignId ?? null,
+    meta
+  ).run();
 }

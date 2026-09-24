@@ -1,4 +1,4 @@
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -24,28 +24,16 @@ export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+  const db = getDB();
+
   const now = new Date();
   const threeDaysFromNow = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
 
-  const campaigns = await db.campaign.findMany({
-    where: {
-      status: { in: ["active", "draft"] },
-    },
-    select: {
-      id: true,
-      titleAr: true,
-      status: true,
-      startsAt: true,
-      endsAt: true,
-      minimumReportingThreshold: true,
-      _count: {
-        select: {
-          responses: true,
-          participationLedger: true,
-        },
-      },
-    },
-  });
+  const campaigns = await db
+    .prepare(
+      "SELECT id, titleAr, status, startsAt, endsAt, minimumReportingThreshold FROM Campaign WHERE status IN ('active', 'draft')"
+    )
+    .all();
 
   const notifications: Array<{
     id: string;
@@ -56,10 +44,24 @@ export const GET = apiHandler(async () => {
     messageAr: string;
   }> = [];
 
-  for (const c of campaigns) {
+  for (const c of campaigns.results ?? []) {
+    // Get response count for this campaign
+    const responseCount = await db
+      .prepare("SELECT COUNT(*) as cnt FROM Response WHERE campaignId = ?")
+      .bind(c.id)
+      .first();
+    const responses = (responseCount?.cnt as number) ?? 0;
+
+    // Get participation ledger count for this campaign
+    const ledgerCount = await db
+      .prepare("SELECT COUNT(*) as cnt FROM ParticipationLedger WHERE campaignId = ?")
+      .bind(c.id)
+      .first();
+    const participationCount = (ledgerCount?.cnt as number) ?? 0;
+
     if (c.status === "active") {
       // About to close
-      if (c.endsAt && new Date(c.endsAt) <= threeDaysFromNow && new Date(c.endsAt) > now) {
+      if (c.endsAt && new Date(c.endsAt as string) <= threeDaysFromNow && new Date(c.endsAt as string) > now) {
         notifications.push({
           id: `about-to-close-${c.id}`,
           type: "about_to_close",
@@ -71,7 +73,7 @@ export const GET = apiHandler(async () => {
       }
 
       // No responses
-      if (c._count.responses === 0) {
+      if (responses === 0) {
         notifications.push({
           id: `no-responses-${c.id}`,
           type: "no_responses",
@@ -89,14 +91,14 @@ export const GET = apiHandler(async () => {
       // responseGroupId, but the ledger count is sufficient for a
       // notification (the actual suppression check uses the precise
       // count).
-      if (c._count.participationLedger < c.minimumReportingThreshold) {
+      if (participationCount < c.minimumReportingThreshold) {
         notifications.push({
           id: `threshold-not-met-${c.id}`,
           type: "threshold_not_met",
           severity: "info",
           campaignId: c.id,
           campaignTitle: c.titleAr,
-          messageAr: `الحملة «${c.titleAr}» لم تصل بعد إلى الحد الأدنى للعرض (${c._count.participationLedger}/${c.minimumReportingThreshold} مشاركة).`,
+          messageAr: `الحملة «${c.titleAr}» لم تصل بعد إلى الحد الأدنى للعرض (${participationCount}/${c.minimumReportingThreshold} مشاركة).`,
         });
       }
     } else if (c.status === "draft") {

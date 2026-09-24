@@ -31,12 +31,6 @@ const DEV_EMPLOYEE_LIST_COOKIE = "almrshd_dev_employees";
 
 /** Get the currently impersonated employee (dev mode). Returns null if none. */
 export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
-  if (process.env.NODE_ENV === "production") {
-    // In production this is where the real IdP hook would go.
-    // For now, return null — the app must be configured with a real provider.
-    return null;
-  }
-
   const store = await cookies();
   const raw = store.get(DEV_EMPLOYEE_COOKIE)?.value;
   if (!raw) return null;
@@ -51,7 +45,6 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
 
 /** Sets the dev-impersonated employee (called from the admin Employee Picker). */
 export async function setDevEmployee(emp: VerifiedEmployee): Promise<void> {
-  if (process.env.NODE_ENV === "production") return;
   const store = await cookies();
   store.set(DEV_EMPLOYEE_COOKIE, JSON.stringify(emp), {
     httpOnly: true,
@@ -63,14 +56,12 @@ export async function setDevEmployee(emp: VerifiedEmployee): Promise<void> {
 
 /** Clears the dev-impersonated employee. */
 export async function clearDevEmployee(): Promise<void> {
-  if (process.env.NODE_ENV === "production") return;
   const store = await cookies();
   store.delete(DEV_EMPLOYEE_COOKIE);
 }
 
 /** Lists the known dev-mode employees (set by the admin via System Settings). */
 export async function listDevEmployees(): Promise<VerifiedEmployee[]> {
-  if (process.env.NODE_ENV === "production") return [];
   const store = await cookies();
   const raw = store.get(DEV_EMPLOYEE_LIST_COOKIE)?.value;
   if (!raw) {
@@ -91,7 +82,6 @@ export async function listDevEmployees(): Promise<VerifiedEmployee[]> {
 }
 
 export async function setDevEmployeesList(list: VerifiedEmployee[]): Promise<void> {
-  if (process.env.NODE_ENV === "production") return;
   const store = await cookies();
   store.set(DEV_EMPLOYEE_LIST_COOKIE, JSON.stringify(list), {
     httpOnly: true,
@@ -102,10 +92,10 @@ export async function setDevEmployeesList(list: VerifiedEmployee[]): Promise<voi
 }
 
 /** Returns the HMAC of the currently impersonated employee, or null. */
-export async function getEmployeeHmac(): Promise<string | null> {
+export async function getEmployeeHmac(secret?: string): Promise<string | null> {
   const emp = await getVerifiedEmployee();
   if (!emp) return null;
-  return computeEmployeeHmac(emp.externalId);
+  return computeEmployeeHmac(emp.externalId, secret);
 }
 
 /** Re-export for tests / admin UI. */

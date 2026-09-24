@@ -14,8 +14,7 @@ import { createHmac, randomUUID } from "crypto";
  * per-process so the duplicate-prevention mechanism still works end-to-end
  * for QA. In production a real secret MUST be configured.
  */
-const DEV_FALLBACK_SECRET =
-  process.env.EMPLOYEE_HMAC_SECRET ?? "dev-almrshd-secret-do-not-use-in-prod";
+const DEV_FALLBACK_SECRET = "dev-almrshd-secret-do-not-use-in-prod";
 
 /**
  * Normalize the employee identifier: trim + lowercase email-style input so
@@ -25,9 +24,10 @@ export function normalizeEmployeeId(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-export function computeEmployeeHmac(rawEmployeeId: string): string {
+export function computeEmployeeHmac(rawEmployeeId: string, secret?: string): string {
   const normalized = normalizeEmployeeId(rawEmployeeId);
-  return createHmac("sha256", DEV_FALLBACK_SECRET).update(normalized).digest("hex");
+  const hmacSecret = secret || DEV_FALLBACK_SECRET;
+  return createHmac("sha256", hmacSecret).update(normalized).digest("hex");
 }
 
 /** Generate a fresh random response_group_id at submission time. Not derived from identity. */

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -21,8 +21,12 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { key } = await ctx.params;
-    const setting = await db.systemSetting.findUnique({ where: { key } });
+    const setting = await db
+      .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+      .bind(key)
+      .first();
     if (!setting) return fail("الإعداد غير موجود.", 404);
 
     return ok({
@@ -43,6 +47,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { key } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -54,13 +59,23 @@ export const PATCH = apiHandler(
       return fail(parsed.error.issues?.[0]?.message ?? "صيغة الطلب غير صالحة.", 422);
     }
 
-    const existing = await db.systemSetting.findUnique({ where: { key } });
+    const existing = await db
+      .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+      .bind(key)
+      .first();
     if (!existing) return fail("الإعداد غير موجود.", 404);
 
-    const updated = await db.systemSetting.update({
-      where: { key },
-      data: { valueAr: parsed.data.valueAr },
-    });
+    await db
+      .prepare(
+        "UPDATE SystemSetting SET valueAr = ?, updatedAt = datetime('now') WHERE key = ?"
+      )
+      .bind(parsed.data.valueAr, key)
+      .run();
+
+    const updated = await db
+      .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+      .bind(key)
+      .first();
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -91,11 +106,15 @@ export const DELETE = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { key } = await ctx.params;
-    const existing = await db.systemSetting.findUnique({ where: { key } });
+    const existing = await db
+      .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+      .bind(key)
+      .first();
     if (!existing) return fail("الإعداد غير موجود.", 404);
 
-    await db.systemSetting.delete({ where: { key } });
+    await db.prepare("DELETE FROM SystemSetting WHERE key = ?").bind(key).run();
 
     await writeAudit({
       adminUserId: admin.adminId,

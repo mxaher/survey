@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { noStore, fail, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
@@ -7,24 +7,6 @@ import { isWithinActiveWindow, nowUtc } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
-/**
- * GET /api/employee/executives/[executiveId]/questions
- *
- * Returns the leadership snapshots (`CampaignQuestionSnapshot` where
- * section='leadership' and campaignId=current active campaign) with their
- * option snapshots.
- *
- * Re-validates server-side:
- *   - Auth (401 if no verified employee).
- *   - There IS a currently-active campaign (else MESSAGES.noActiveCampaign /
- *     MESSAGES.campaignClosed).
- *   - The executive is assigned + enabled to the campaign AND active globally
- *     (else MESSAGES.unauthorized).
- *   - The employee has NOT already evaluated this executive (else 409 with
- *     MESSAGES.duplicateExecutive).
- *
- * NEVER returns `employeeHmac`. `Cache-Control: no-store` via `noStore()`.
- */
 export const GET = apiHandler(
   async (
     _request: NextRequest,
@@ -38,84 +20,84 @@ export const GET = apiHandler(
 
     const { executiveId } = await ctx.params;
 
-    // Locate the currently-active campaign.
+    const db = getDB();
+
     const now = nowUtc();
-    const candidates = await db.campaign.findMany({
-      where: { status: "active" },
-    });
-    const active = candidates.find((c) =>
-      isWithinActiveWindow(now, c.startsAt, c.endsAt).active
+    const { results: candidates } = await db
+      .prepare("SELECT * FROM Campaign WHERE status = 'active'")
+      .all();
+    const active = candidates.find((c: any) =>
+      isWithinActiveWindow(now, new Date(c.startsAt), new Date(c.endsAt)).active
     );
     if (!active) {
-      // Spec: if no active campaign exists, return MESSAGES.noActiveCampaign.
       return fail(MESSAGES.noActiveCampaign, 400);
     }
 
-    // Re-validate: executive assigned + enabled + active.
-    const assignment = await db.campaignExecutive.findUnique({
-      where: {
-        campaignId_executiveId: {
-          campaignId: active.id,
-          executiveId,
-        },
-      },
-      include: { executive: true },
-    });
+    const assignment = await db
+      .prepare(
+        `SELECT ce.id, ce.displayOrder, ce.isEnabled,
+                e.id AS executiveId, e.nameAr, e.titleAr, e.category, e.departmentAr, e.isActive, e.deletedAt
+         FROM CampaignExecutive ce
+         JOIN Executive e ON e.id = ce.executiveId
+         WHERE ce.campaignId = ? AND ce.executiveId = ?`
+      )
+      .bind(active.id, executiveId)
+      .first();
+
     if (
       !assignment ||
       !assignment.isEnabled ||
-      !assignment.executive ||
-      !assignment.executive.isActive ||
-      assignment.executive.deletedAt !== null
+      !assignment.isActive ||
+      assignment.deletedAt !== null
     ) {
-      // Not assigned / disabled / soft-deleted → not authorized for this eval.
       return fail(MESSAGES.unauthorized, 403);
     }
 
-    // Re-validate: employee hasn't already evaluated this executive.
-    const existing = await db.participationLedger.findUnique({
-      where: {
-        campaignId_employeeHmac_participationType_scopeKey: {
-          campaignId: active.id,
-          employeeHmac,
-          participationType: "executive",
-          scopeKey: executiveId,
-        },
-      },
-      select: { status: true, submittedAt: true },
-    });
+    const existing = await db
+      .prepare(
+        "SELECT status, submittedAt FROM ParticipationLedger WHERE campaignId = ? AND employeeHmac = ? AND participationType = 'executive' AND scopeKey = ?"
+      )
+      .bind(active.id, employeeHmac, executiveId)
+      .first();
     if (existing && existing.status === "submitted") {
       return fail(MESSAGES.duplicateExecutive, 409);
     }
 
-    // Serve frozen leadership snapshots only (immutable from activation).
-    const snapshots = await db.campaignQuestionSnapshot.findMany({
-      where: { campaignId: active.id, section: "leadership" },
-      include: { options: true },
-      orderBy: { displayOrder: "asc" },
-    });
+    const { results: snapshots } = await db
+      .prepare(
+        "SELECT * FROM CampaignQuestionSnapshot WHERE campaignId = ? AND section = 'leadership' ORDER BY displayOrder ASC"
+      )
+      .bind(active.id)
+      .all();
 
-    const questions = snapshots.map((s) => ({
-      snapshotId: s.id,
-      originalQuestionId: s.originalQuestionId,
-      questionCode: s.questionCode,
-      questionAr: s.questionAr,
-      questionType: s.questionType,
-      section: s.section,
-      dimension: s.dimension,
-      isRequired: s.isRequired,
-      displayOrder: s.displayOrder,
-      maxSelections: s.maxSelections,
-      options: s.options
-        .sort((a, b) => a.displayOrder - b.displayOrder)
-        .map((o) => ({
+    const questions: any[] = [];
+    for (const s of snapshots) {
+      const { results: options } = await db
+        .prepare(
+          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+        )
+        .bind(s.id)
+        .all();
+      questions.push({
+        snapshotId: s.id,
+        originalQuestionId: s.originalQuestionId,
+        questionCode: s.questionCode,
+        questionAr: s.questionAr,
+        questionType: s.questionType,
+        section: s.section,
+        dimension: s.dimension,
+        isRequired: s.isRequired,
+        displayOrder: s.displayOrder,
+        maxSelections: s.maxSelections,
+        options: options.map((o: any) => ({
           id: o.id,
           value: o.value,
           labelAr: o.labelAr,
           score: o.score,
           displayOrder: o.displayOrder,
         })),
-    }));
+      });
+    }
 
     return noStore({
       campaign: {
@@ -123,11 +105,11 @@ export const GET = apiHandler(
         titleAr: active.titleAr,
       },
       executive: {
-        id: assignment.executive.id,
-        nameAr: assignment.executive.nameAr,
-        titleAr: assignment.executive.titleAr,
-        category: assignment.executive.category,
-        departmentAr: assignment.executive.departmentAr,
+        id: assignment.executiveId,
+        nameAr: assignment.nameAr,
+        titleAr: assignment.titleAr,
+        category: assignment.category,
+        departmentAr: assignment.departmentAr,
         displayOrder: assignment.displayOrder,
       },
       questions,

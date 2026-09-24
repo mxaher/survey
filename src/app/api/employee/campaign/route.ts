@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { noStore, fail, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee } from "@/lib/identity";
 import { MESSAGES, PRIVACY_NOTICE } from "@/lib/messages";
@@ -7,78 +7,74 @@ import { isWithinActiveWindow, nowUtc } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
-/**
- * GET /api/employee/campaign
- *
- * Returns the single currently-active campaign (status='active' AND within
- * startsAt/endsAt window) along with the fields the employee UI needs:
- *   title, description, instructions, privacy notice, toggles, min/max
- *   executives, allowResume.
- *
- * If no active campaign exists, returns `{ ok: true, data: null }` — the
- * frontend handles the null gracefully and shows MESSAGES.noActiveCampaign
- * (spec §4 / §13.1).
- *
- * Auth: must call `getVerifiedEmployee()` first; 401 with MESSAGES.unauthorized
- * if null. `Cache-Control: no-store` enforced via `noStore()`.
- *
- * NEVER returns `employeeHmac`.
- */
 export const GET = apiHandler(async (_request: NextRequest) => {
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
 
-  // A campaign is "currently active" iff status='active' AND now is inside
-  // [startsAt, endsAt]. The status flip is admin-driven; the window check
-  // additionally protects against the case where the admin forgot to close
-  // an expired campaign.
-  const now = nowUtc();
-  const candidates = await db.campaign.findMany({
-    where: { status: "active" },
-  });
+  const db = getDB();
 
-  const active = candidates.find((c) =>
-    isWithinActiveWindow(now, c.startsAt, c.endsAt).active
+  const now = nowUtc();
+  const { results: candidates } = await db
+    .prepare("SELECT * FROM Campaign WHERE status = 'active'")
+    .all();
+
+  const active = candidates.find((c: any) =>
+    isWithinActiveWindow(now, new Date(c.startsAt), new Date(c.endsAt)).active
   );
 
   if (!active) {
-    // Spec §13.1 — frontend renders MESSAGES.noActiveCampaign from this null.
     return noStore(null);
   }
 
-  // Resolve privacy notice: campaign override > system setting > bundled constant.
-  let privacyNoticeAr = active.privacyNoticeAr;
+  let privacyNoticeAr = active.privacyNoticeAr as string | null;
   if (!privacyNoticeAr || privacyNoticeAr.trim() === "") {
-    const setting = await db.systemSetting.findUnique({
-      where: { key: "privacy_notice" },
-    });
-    privacyNoticeAr = setting?.valueAr ?? PRIVACY_NOTICE;
+    const setting = await db
+      .prepare("SELECT * FROM SystemSetting WHERE key = ?")
+      .bind("privacy_notice")
+      .first();
+    privacyNoticeAr =
+      (setting?.valueAr as string | null) ?? PRIVACY_NOTICE;
   }
 
-  // Bundle the environment + future frozen question snapshots so the employee
-  // wizard can render steps 1 + 3 from a single round-trip (Task 3-a UX).
-  // Leadership snapshots are still loaded per-executive via the existing
-  // `/api/employee/executives/[executiveId]/questions` endpoint (one
-  // executive at a time in step 2). Each snapshot item carries the option
-  // snapshots too — same shape the leadership questions endpoint returns,
-  // so the UI can use a single shared QuestionCard component.
-  const envSnapshots = active.enableEnvironmentSurvey
-    ? await db.campaignQuestionSnapshot.findMany({
-        where: { campaignId: active.id, section: "environment" },
-        include: { options: true },
-        orderBy: { displayOrder: "asc" },
-      })
-    : [];
+  let envSnapshots: any[] = [];
+  if (active.enableEnvironmentSurvey) {
+    const { results: snaps } = await db
+      .prepare(
+        "SELECT * FROM CampaignQuestionSnapshot WHERE campaignId = ? AND section = 'environment' ORDER BY displayOrder ASC"
+      )
+      .bind(active.id)
+      .all();
+    for (const s of snaps) {
+      const { results: opts } = await db
+        .prepare(
+          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+        )
+        .bind(s.id)
+        .all();
+      envSnapshots.push({ ...s, options: opts });
+    }
+  }
 
-  const futureSnapshots = active.enableFutureSurvey
-    ? await db.campaignQuestionSnapshot.findMany({
-        where: { campaignId: active.id, section: "future" },
-        include: { options: true },
-        orderBy: { displayOrder: "asc" },
-      })
-    : [];
+  let futureSnapshots: any[] = [];
+  if (active.enableFutureSurvey) {
+    const { results: snaps } = await db
+      .prepare(
+        "SELECT * FROM CampaignQuestionSnapshot WHERE campaignId = ? AND section = 'future' ORDER BY displayOrder ASC"
+      )
+      .bind(active.id)
+      .all();
+    for (const s of snaps) {
+      const { results: opts } = await db
+        .prepare(
+          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+        )
+        .bind(s.id)
+        .all();
+      futureSnapshots.push({ ...s, options: opts });
+    }
+  }
 
-  const environmentQuestions = envSnapshots.map((s) => ({
+  const environmentQuestions = envSnapshots.map((s: any) => ({
     id: s.id,
     originalQuestionId: s.originalQuestionId,
     questionCode: s.questionCode,
@@ -89,10 +85,10 @@ export const GET = apiHandler(async (_request: NextRequest) => {
     isRequired: s.isRequired,
     displayOrder: s.displayOrder,
     maxSelections: s.maxSelections,
-    options: s.options
+    options: (s.options as any[])
       .slice()
-      .sort((a, b) => a.displayOrder - b.displayOrder)
-      .map((o) => ({
+      .sort((a: any, b: any) => a.displayOrder - b.displayOrder)
+      .map((o: any) => ({
         id: o.id,
         value: o.value,
         labelAr: o.labelAr,
@@ -101,7 +97,7 @@ export const GET = apiHandler(async (_request: NextRequest) => {
       })),
   }));
 
-  const futureQuestions = futureSnapshots.map((s) => ({
+  const futureQuestions = futureSnapshots.map((s: any) => ({
     id: s.id,
     originalQuestionId: s.originalQuestionId,
     questionCode: s.questionCode,
@@ -112,10 +108,10 @@ export const GET = apiHandler(async (_request: NextRequest) => {
     isRequired: s.isRequired,
     displayOrder: s.displayOrder,
     maxSelections: s.maxSelections,
-    options: s.options
+    options: (s.options as any[])
       .slice()
-      .sort((a, b) => a.displayOrder - b.displayOrder)
-      .map((o) => ({
+      .sort((a: any, b: any) => a.displayOrder - b.displayOrder)
+      .map((o: any) => ({
         id: o.id,
         value: o.value,
         labelAr: o.labelAr,

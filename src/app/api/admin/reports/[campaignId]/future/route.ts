@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -13,14 +13,9 @@ export const dynamic = "force-dynamic";
  *
  * For each future question snapshot, returns the distribution of
  * selected values as `{ value, labelAr, count, percentage }[]`.
- * `percentage` is `count / questionTotal * 100` rounded to 2 dp.
  *
- * Threshold suppression (spec §13.6): if the total future responses
- * for this campaign are below `minimumReportingThreshold`, the whole
- * report is suppressed — return `{ suppressed: true, message }` and
- * nothing else.
- *
- * NEVER exposes raw Response rows or any employee identifier.
+ * Threshold suppression: if distinct submitters < minimumReportingThreshold,
+ * the whole report is suppressed.
  */
 export const GET = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ campaignId: string }> }) => {
@@ -28,43 +23,51 @@ export const GET = apiHandler(
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
     const { campaignId } = await ctx.params;
+    const db = getDB();
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: {
-        id: true,
-        titleAr: true,
-        status: true,
-        minimumReportingThreshold: true,
-        enableFutureSurvey: true,
-      },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, titleAr, status, minimumReportingThreshold, enableFutureSurvey
+       FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    const [snapshots, responses] = await Promise.all([
-      db.campaignQuestionSnapshot.findMany({
-        where: { campaignId, section: "future" },
-        include: { options: true },
-        orderBy: { displayOrder: "asc" },
-      }),
-      db.response.findMany({
-        where: { campaignId, responseType: "future" },
-        select: {
-          questionSnapshotId: true,
-          responseGroupId: true,
-          selectedValue: true,
-        },
-      }),
+    const threshold = campaign.minimumReportingThreshold as number;
+
+    const [snapshotsResult, responsesResult, optionsResult] = await Promise.all([
+      db.prepare(
+        `SELECT id, questionCode, questionAr, questionType, section, dimension, isRequired, displayOrder, maxSelections
+         FROM CampaignQuestionSnapshot
+         WHERE campaignId = ? AND section = 'future'
+         ORDER BY displayOrder ASC`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT questionSnapshotId, responseGroupId, selectedValue
+         FROM Response
+         WHERE campaignId = ? AND responseType = 'future'`
+      ).bind(campaignId).all(),
+      db.prepare(
+        `SELECT cos.id AS snapshotId, cos.value, cos.labelAr, cos.score, cos.displayOrder
+         FROM CampaignQuestionOptionSnapshot cos
+         JOIN CampaignQuestionSnapshot cs ON cs.id = cos.campaignQuestionSnapshotId
+         WHERE cs.campaignId = ? AND cs.section = 'future'
+         ORDER BY cos.displayOrder ASC`
+      ).bind(campaignId).all(),
     ]);
 
-    const threshold = campaign.minimumReportingThreshold;
+    const snapshots = snapshotsResult.results as Record<string, unknown>[];
+    const responses = responsesResult.results as Record<string, unknown>[];
+    const allOptions = optionsResult.results as Record<string, unknown>[];
 
-    // Whole-section suppression: based on DISTINCT submitters
-    // (responseGroupId), NOT raw response rows. One future submission can
-    // produce multiple response rows (one per selected value for
-    // multi-choice questions), so `responses.length` over-counts.
+    const optionsBySnapshot = new Map<string, Record<string, unknown>[]>();
+    for (const opt of allOptions) {
+      const snapId = opt.snapshotId as string;
+      if (!optionsBySnapshot.has(snapId)) optionsBySnapshot.set(snapId, []);
+      optionsBySnapshot.get(snapId)!.push(opt);
+    }
+
+    // Whole-section suppression based on DISTINCT responseGroupId
     const distinctSubmitters = new Set(
-      responses.map((r) => r.responseGroupId)
+      responses.map((r) => r.responseGroupId as string)
     ).size;
 
     if (distinctSubmitters < threshold) {
@@ -78,16 +81,18 @@ export const GET = apiHandler(
       });
     }
 
-    // Group responses by questionSnapshotId.
+    // Group responses by questionSnapshotId
     const bySnapshot = new Map<string, string[]>();
     for (const r of responses) {
-      const arr = bySnapshot.get(r.questionSnapshotId) ?? [];
-      arr.push(r.selectedValue);
-      bySnapshot.set(r.questionSnapshotId, arr);
+      const snapId = r.questionSnapshotId as string;
+      const arr = bySnapshot.get(snapId) ?? [];
+      arr.push(r.selectedValue as string);
+      bySnapshot.set(snapId, arr);
     }
 
     const questions = snapshots.map((snap) => {
-      const values = bySnapshot.get(snap.id) ?? [];
+      const snapId = snap.id as string;
+      const values = bySnapshot.get(snapId) ?? [];
       const total = values.length;
 
       const buckets = new Map<string, number>();
@@ -95,31 +100,27 @@ export const GET = apiHandler(
         buckets.set(v, (buckets.get(v) ?? 0) + 1);
       }
 
-      // Per-question threshold suppression: if this individual question has
-      // fewer responses than the campaign threshold, mask the distribution
-      // counts (but still return the question text + raw total so the UI
-      // can show "أقل من حد الإخفاء"). Protects against re-identification
-      // via low-N questions inside an otherwise qualifying section.
       const perQuestionSuppressed = total < threshold;
 
-      const distribution = snap.options
+      const snapOpts = (optionsBySnapshot.get(snapId) ?? [])
         .slice()
-        .sort((a, b) => a.displayOrder - b.displayOrder)
-        .map((opt) => {
-          const c = perQuestionSuppressed ? 0 : (buckets.get(opt.value) ?? 0);
-          return {
-            value: opt.value,
-            labelAr: opt.labelAr,
-            count: c,
-            percentage:
-              perQuestionSuppressed || total === 0
-                ? 0
-                : Math.round((c / total) * 10000) / 100,
-          };
-        });
+        .sort((a, b) => (a.displayOrder as number) - (b.displayOrder as number));
 
-      // Catch-all for unknown values.
-      const knownValues = new Set(snap.options.map((o) => o.value));
+      const distribution = snapOpts.map((opt) => {
+        const c = perQuestionSuppressed ? 0 : (buckets.get(opt.value as string) ?? 0);
+        return {
+          value: opt.value as string,
+          labelAr: opt.labelAr as string,
+          count: c,
+          percentage:
+            perQuestionSuppressed || total === 0
+              ? 0
+              : Math.round((c / total) * 10000) / 100,
+        };
+      });
+
+      // Catch-all for unknown values
+      const knownValues = new Set(snapOpts.map((o) => o.value as string));
       for (const [value, c] of buckets) {
         if (!knownValues.has(value)) {
           distribution.push({
@@ -135,7 +136,7 @@ export const GET = apiHandler(
       }
 
       return {
-        snapshotId: snap.id,
+        snapshotId: snapId,
         questionCode: snap.questionCode,
         questionAr: snap.questionAr,
         questionType: snap.questionType,

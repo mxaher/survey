@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -14,8 +14,7 @@ function isEditable(status: string): boolean {
 
 /**
  * GET /api/admin/campaigns/[campaignId]/executives
- * Lists all executive assignments for a campaign, joined with the
- * executive. Ordered by displayOrder.
+ * Lists all executive assignments for a campaign, joined with the executive.
  */
 export const GET = apiHandler(
   async (
@@ -25,45 +24,49 @@ export const GET = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId } = await ctx.params;
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
 
-    const assignments = await db.campaignExecutive.findMany({
-      where: { campaignId },
-      orderBy: { displayOrder: "asc" },
-      include: { executive: true },
-    });
+    const assignments = await db.prepare(
+      `SELECT ce.campaignId, ce.executiveId, ce.displayOrder, ce.isEnabled,
+              ce.createdAt, ce.updatedAt,
+              e.nameAr, e.titleAr, e.category, e.departmentAr,
+              e.displayOrder AS execDisplayOrder, e.isActive, e.deletedAt
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ?
+       ORDER BY ce.displayOrder ASC`
+    ).bind(campaignId).all();
 
     return ok({
       campaign: {
         id: campaign.id,
         titleAr: campaign.titleAr,
         status: campaign.status,
-        editable: isEditable(campaign.status),
+        editable: isEditable(campaign.status as string),
       },
-      assignments: assignments.map((a) => ({
+      assignments: assignments.results.map((a: Record<string, unknown>) => ({
         campaignId: a.campaignId,
         executiveId: a.executiveId,
         displayOrder: a.displayOrder,
         isEnabled: a.isEnabled,
         createdAt: a.createdAt,
         updatedAt: a.updatedAt,
-        executive: a.executive
-          ? {
-              id: a.executive.id,
-              nameAr: a.executive.nameAr,
-              titleAr: a.executive.titleAr,
-              category: a.executive.category,
-              departmentAr: a.executive.departmentAr,
-              displayOrder: a.executive.displayOrder,
-              isActive: a.executive.isActive,
-              deletedAt: a.executive.deletedAt,
-            }
-          : null,
+        executive: {
+          id: a.executiveId,
+          nameAr: a.nameAr,
+          titleAr: a.titleAr,
+          category: a.category,
+          departmentAr: a.departmentAr,
+          displayOrder: a.execDisplayOrder,
+          isActive: a.isActive,
+          deletedAt: a.deletedAt,
+        },
       })),
     });
   }
@@ -72,14 +75,6 @@ export const GET = apiHandler(
 /**
  * POST /api/admin/campaigns/[campaignId]/executives
  * Assigns one or more executives to a DRAFT or SCHEDULED campaign.
- *
- * Body:
- *   { executiveIds: string[], displayOrder?, isEnabled? }
- *
- * - Rejects for active/closed/archived with MESSAGES.cannotEditActiveCampaign.
- * - Idempotent: existing assignments are skipped.
- * - Wrapped in db.$transaction.
- * - Audits `campaign_executive.assign` with the list of newly-assigned ids.
  */
 const assignSchema = z.object({
   executiveIds: z
@@ -97,6 +92,7 @@ export const POST = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json) return fail("صيغة الطلب غير صالحة.", 400);
@@ -110,28 +106,25 @@ export const POST = apiHandler(
     }
     const input = parsed.data;
 
-    // Re-validate campaign status from the DB.
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
-    if (!isEditable(campaign.status)) {
+    if (!isEditable(campaign.status as string)) {
       return fail(MESSAGES.cannotEditActiveCampaign, 400, {
         status: campaign.status,
       });
     }
 
-    // De-duplicate defensively.
     const uniqueIds = Array.from(new Set(input.executiveIds));
 
-    // Validate every executive exists and is not soft-deleted globally.
-    const validExecs = await db.executive.findMany({
-      where: { id: { in: uniqueIds }, deletedAt: null },
-      select: { id: true, nameAr: true, isActive: true },
-    });
-    const validIds = new Set(validExecs.map((e) => e.id));
-    const invalid = uniqueIds.filter((id) => !validIds.has(id));
+    // Validate every executive exists and is not soft-deleted
+    const placeholders = uniqueIds.map(() => "?").join(",");
+    const validExecs = await db.prepare(
+      `SELECT id FROM Executive WHERE id IN (${placeholders}) AND deletedAt IS NULL`
+    ).bind(...uniqueIds).all();
+    const validIds = new Set(validExecs.results.map((e: Record<string, unknown>) => e.id));
+    const invalid = uniqueIds.filter((eid) => !validIds.has(eid));
     if (invalid.length > 0) {
       return fail(
         "بعض المسؤولين المحددين غير موجودين أو محذوفين.",
@@ -140,13 +133,12 @@ export const POST = apiHandler(
       );
     }
 
-    // Find which are already assigned (skip those — idempotent).
-    const existing = await db.campaignExecutive.findMany({
-      where: { campaignId, executiveId: { in: uniqueIds } },
-      select: { executiveId: true },
-    });
-    const existingIds = new Set(existing.map((e) => e.executiveId));
-    const toCreate = uniqueIds.filter((id) => !existingIds.has(id));
+    // Find which are already assigned
+    const existing = await db.prepare(
+      `SELECT executiveId FROM CampaignExecutive WHERE campaignId = ? AND executiveId IN (${placeholders})`
+    ).bind(campaignId, ...uniqueIds).all();
+    const existingIds = new Set(existing.results.map((e: Record<string, unknown>) => e.executiveId));
+    const toCreate = uniqueIds.filter((eid) => !existingIds.has(eid));
 
     if (toCreate.length === 0) {
       await writeAudit({
@@ -169,46 +161,34 @@ export const POST = apiHandler(
       });
     }
 
-    // Resolve a sensible displayOrder: if the body supplied one, use it for
-    // every new row; otherwise append after the current max.
+    // Resolve displayOrder
     let baseOrder = input.displayOrder;
     if (baseOrder === undefined) {
-      const maxRow = await db.campaignExecutive.findFirst({
-        where: { campaignId },
-        orderBy: { displayOrder: "desc" },
-        select: { displayOrder: true },
-      });
-      baseOrder = (maxRow?.displayOrder ?? -1) + 1;
+      const maxRow = await db.prepare(
+        `SELECT displayOrder FROM CampaignExecutive WHERE campaignId = ? ORDER BY displayOrder DESC LIMIT 1`
+      ).bind(campaignId).first() as Record<string, unknown> | null;
+      baseOrder = ((maxRow?.displayOrder as number) ?? -1) + 1;
     }
 
-    const created = await db.$transaction(async (tx) => {
-      const c = await tx.campaign.findUnique({
-        where: { id: campaignId },
-        select: { status: true },
-      });
-      if (!c) throw new Error("campaign_not_found");
-      if (!isEditable(c.status)) throw new Error("invalid_status");
+    // Build batch insert
+    const now = new Date().toISOString();
+    const statements: ReturnType<typeof db.prepare>[] = [];
+    const rows: { executiveId: string; displayOrder: number; isEnabled: boolean }[] = [];
 
-      const rows: { executiveId: string; displayOrder: number; isEnabled: boolean }[] = [];
-      let i = 0;
-      for (const eId of toCreate) {
-        const row = await tx.campaignExecutive.create({
-          data: {
-            campaignId,
-            executiveId: eId,
-            displayOrder: baseOrder + i,
-            isEnabled: input.isEnabled ?? true,
-          },
-        });
-        rows.push({
-          executiveId: row.executiveId,
-          displayOrder: row.displayOrder,
-          isEnabled: row.isEnabled,
-        });
-        i++;
-      }
-      return rows;
-    });
+    let i = 0;
+    for (const eId of toCreate) {
+      const rowEnabled = input.isEnabled ?? true;
+      rows.push({ executiveId: eId, displayOrder: baseOrder + i, isEnabled: rowEnabled });
+      statements.push(
+        db.prepare(
+          `INSERT INTO CampaignExecutive (campaignId, executiveId, displayOrder, isEnabled, createdAt, updatedAt)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        ).bind(campaignId, eId, baseOrder + i, rowEnabled ? 1 : 0, now, now)
+      );
+      i++;
+    }
+
+    await db.batch(statements);
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -217,7 +197,7 @@ export const POST = apiHandler(
       campaignId,
       metadata: {
         requested: uniqueIds,
-        created: created.map((c) => c.executiveId),
+        created: rows.map((r) => r.executiveId),
         skipped: Array.from(existingIds),
       },
     });
@@ -225,9 +205,9 @@ export const POST = apiHandler(
     return ok(
       {
         campaignId,
-        assigned: created,
+        assigned: rows,
         skipped: Array.from(existingIds),
-        created: created.length,
+        created: rows.length,
       },
       { status: 201 }
     );

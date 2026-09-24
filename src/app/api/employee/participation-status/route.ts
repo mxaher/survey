@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { noStore, fail, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
@@ -12,22 +12,6 @@ const QuerySchema = z.object({
   campaignId: z.string().min(1),
 });
 
-/**
- * GET /api/employee/participation-status?campaignId=...
- *
- * Returns:
- *   {
- *     environmentSubmitted: boolean,
- *     futureSubmitted: boolean,
- *     evaluatedExecutiveIds: string[],
- *     allExecutivesEvaluated: boolean
- *   }
- *
- * Computed entirely from the ParticipationLedger rows for the current
- * employee's HMAC (NEVER returned in the response).
- *
- * Auth: 401 if no verified employee. `Cache-Control: no-store` via `noStore()`.
- */
 export const GET = apiHandler(async (request: NextRequest) => {
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
@@ -44,61 +28,58 @@ export const GET = apiHandler(async (request: NextRequest) => {
   }
   const { campaignId } = parsed.data;
 
-  const campaign = await db.campaign.findUnique({
-    where: { id: campaignId },
-    select: {
-      id: true,
-      status: true,
-      startsAt: true,
-      endsAt: true,
-    },
-  });
+  const db = getDB();
+
+  const campaign = await db
+    .prepare(
+      "SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?"
+    )
+    .bind(campaignId)
+    .first();
 
   if (!campaign || campaign.status !== "active") {
     return fail(MESSAGES.noActiveCampaign, 400);
   }
   const now = nowUtc();
-  const window = isWithinActiveWindow(now, campaign.startsAt, campaign.endsAt);
+  const window = isWithinActiveWindow(
+    now,
+    new Date(campaign.startsAt as string),
+    new Date(campaign.endsAt as string)
+  );
   if (!window.active) {
     return fail(MESSAGES.campaignClosed, 400);
   }
 
-  // All submitted ledger rows for this employee in this campaign.
-  const rows = await db.participationLedger.findMany({
-    where: {
-      campaignId,
-      employeeHmac,
-      status: "submitted",
-    },
-    select: {
-      participationType: true,
-      scopeKey: true,
-    },
-  });
+  const { results: rows } = await db
+    .prepare(
+      "SELECT participationType, scopeKey FROM ParticipationLedger WHERE campaignId = ? AND employeeHmac = ? AND status = 'submitted'"
+    )
+    .bind(campaignId, employeeHmac)
+    .all();
 
   const environmentSubmitted = rows.some(
-    (r) =>
+    (r: any) =>
       r.participationType === "environment" && r.scopeKey === "environment"
   );
   const futureSubmitted = rows.some(
-    (r) => r.participationType === "future" && r.scopeKey === "future"
+    (r: any) => r.participationType === "future" && r.scopeKey === "future"
   );
   const evaluatedExecutiveIds = rows
-    .filter((r) => r.participationType === "executive" && Boolean(r.scopeKey))
-    .map((r) => r.scopeKey as string);
+    .filter(
+      (r: any) => r.participationType === "executive" && Boolean(r.scopeKey)
+    )
+    .map((r: any) => r.scopeKey as string);
 
-  // Total active executives available for this campaign — used to compute
-  // the "all evaluated" flag for the UI's "you're done" hint.
-  const totalExecutives = await db.campaignExecutive.count({
-    where: {
-      campaignId,
-      isEnabled: true,
-      executive: { isActive: true, deletedAt: null },
-    },
-  });
+  const { totalExecutives } = (await db
+    .prepare(
+      `SELECT COUNT(*) AS totalExecutives
+       FROM CampaignExecutive ce
+       JOIN Executive e ON e.id = ce.executiveId
+       WHERE ce.campaignId = ? AND ce.isEnabled = 1 AND e.isActive = 1 AND e.deletedAt IS NULL`
+    )
+    .bind(campaignId)
+    .first()) as any;
 
-  // De-dupe (defensive — same scopeKey shouldn't appear twice due to the
-  // unique constraint, but be defensive).
   const evaluatedSet = new Set(evaluatedExecutiveIds);
   const allExecutivesEvaluated =
     totalExecutives > 0 && evaluatedSet.size >= totalExecutives;

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
@@ -17,10 +17,7 @@ function isEditable(status: string): boolean {
 
 /**
  * PATCH /api/admin/campaigns/[campaignId]/questions/[questionId]
- *
- * Update `scope`, `isRequired`, `displayOrder` for a single assignment in
- * a DRAFT or SCHEDULED campaign only. Re-validates campaign status from the
- * DB before mutating. Audits `campaign_question.update`.
+ * Update scope, isRequired, displayOrder for a single assignment.
  */
 const patchSchema = z.object({
   scope: z
@@ -43,6 +40,7 @@ export const PATCH = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId, questionId } = await ctx.params;
     const json = await request.json().catch(() => null);
     if (!json || typeof json !== "object") {
@@ -58,36 +56,46 @@ export const PATCH = apiHandler(
     }
     const input = parsed.data as Record<string, unknown>;
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
-    if (!isEditable(campaign.status)) {
+    if (!isEditable(campaign.status as string)) {
       return fail(MESSAGES.cannotEditActiveCampaign, 400, {
         status: campaign.status,
       });
     }
 
-    const existing = await db.campaignQuestionConfig.findUnique({
-      where: { campaignId_questionId: { campaignId, questionId } },
-    });
+    const existing = await db.prepare(
+      `SELECT * FROM CampaignQuestionConfig WHERE campaignId = ? AND questionId = ?`
+    ).bind(campaignId, questionId).first() as Record<string, unknown> | null;
     if (!existing) {
       return fail("الإسناد غير موجود لهذه الحملة.", 404);
     }
 
-    const data: Record<string, unknown> = {};
+    // Build SET clause
+    const setParts: string[] = [];
+    const bindValues: unknown[] = [];
     for (const k of ["scope", "isRequired", "displayOrder"]) {
-      if (input[k] !== undefined) data[k] = input[k];
+      if (input[k] !== undefined) {
+        let val = input[k];
+        if (typeof val === "boolean") val = val ? 1 : 0;
+        setParts.push(`${k} = ?`);
+        bindValues.push(val);
+      }
     }
 
-    const updated =
-      Object.keys(data).length > 0
-        ? await db.campaignQuestionConfig.update({
-            where: { campaignId_questionId: { campaignId, questionId } },
-            data: data as Parameters<typeof db.campaignQuestionConfig.update>[0]["data"],
-          })
-        : existing;
+    if (setParts.length > 0) {
+      setParts.push("updatedAt = datetime('now')");
+      bindValues.push(campaignId, questionId);
+      await db.prepare(
+        `UPDATE CampaignQuestionConfig SET ${setParts.join(", ")} WHERE campaignId = ? AND questionId = ?`
+      ).bind(...bindValues).run();
+    }
+
+    const updated = await db.prepare(
+      `SELECT * FROM CampaignQuestionConfig WHERE campaignId = ? AND questionId = ?`
+    ).bind(campaignId, questionId).first() as Record<string, unknown>;
 
     await writeAudit({
       adminUserId: admin.adminId,
@@ -96,7 +104,7 @@ export const PATCH = apiHandler(
       entityId: questionId,
       campaignId,
       metadata: {
-        fields: Object.keys(data),
+        fields: Object.keys(input),
         previous: {
           scope: existing.scope,
           isRequired: existing.isRequired,
@@ -123,8 +131,7 @@ export const PATCH = apiHandler(
 
 /**
  * DELETE /api/admin/campaigns/[campaignId]/questions/[questionId]
- * Removes a question assignment from a DRAFT or SCHEDULED campaign only.
- * Re-validates campaign status from the DB. Audits `campaign_question.remove`.
+ * Removes a question assignment from a DRAFT or SCHEDULED campaign.
  */
 export const DELETE = apiHandler(
   async (
@@ -136,29 +143,29 @@ export const DELETE = apiHandler(
     const admin = await getAdminUser();
     if (!admin) return fail(MESSAGES.unauthorized, 401);
 
+    const db = getDB();
     const { id: campaignId, questionId } = await ctx.params;
 
-    const campaign = await db.campaign.findUnique({
-      where: { id: campaignId },
-      select: { id: true, status: true, titleAr: true },
-    });
+    const campaign = await db.prepare(
+      `SELECT id, status, titleAr FROM Campaign WHERE id = ?`
+    ).bind(campaignId).first() as Record<string, unknown> | null;
     if (!campaign) return fail("الحملة غير موجودة.", 404);
-    if (!isEditable(campaign.status)) {
+    if (!isEditable(campaign.status as string)) {
       return fail(MESSAGES.cannotEditActiveCampaign, 400, {
         status: campaign.status,
       });
     }
 
-    const existing = await db.campaignQuestionConfig.findUnique({
-      where: { campaignId_questionId: { campaignId, questionId } },
-    });
+    const existing = await db.prepare(
+      `SELECT * FROM CampaignQuestionConfig WHERE campaignId = ? AND questionId = ?`
+    ).bind(campaignId, questionId).first() as Record<string, unknown> | null;
     if (!existing) {
       return fail("الإسناد غير موجود لهذه الحملة.", 404);
     }
 
-    await db.campaignQuestionConfig.delete({
-      where: { campaignId_questionId: { campaignId, questionId } },
-    });
+    await db.prepare(
+      `DELETE FROM CampaignQuestionConfig WHERE campaignId = ? AND questionId = ?`
+    ).bind(campaignId, questionId).run();
 
     await writeAudit({
       adminUserId: admin.adminId,

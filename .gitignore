@@ -32,6 +32,11 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+.dev.vars
+
+# Cloudflare Workers build output
+.open-next/
+.wrangler/
 
 # vercel
 .vercel
@@ -52,3 +57,14 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Tool results (local session artifacts)
+tool-results/
+
+# Local database files
+*.db
+*.db-journal
+*.db-wal
+
+# Package lock (using bun.lock)
+package-lock.json

@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { MESSAGES } from "@/lib/messages";
@@ -49,44 +48,75 @@ export const GET = apiHandler(async (request: NextRequest) => {
   }
   const { campaignId, action, entityType, page, pageSize } = parsed.data;
 
-  const where: Prisma.AuditLogWhereInput = {};
-  if (campaignId) where.campaignId = campaignId;
-  if (action) where.action = action;
-  if (entityType) where.entityType = entityType;
+  const db = getDB();
 
-  const total = await db.auditLog.count({ where });
+  // Build WHERE clause dynamically
+  const conditions: string[] = [];
+  const bindValues: unknown[] = [];
+  if (campaignId) {
+    conditions.push("campaignId = ?");
+    bindValues.push(campaignId);
+  }
+  if (action) {
+    conditions.push("action = ?");
+    bindValues.push(action);
+  }
+  if (entityType) {
+    conditions.push("entityType = ?");
+    bindValues.push(entityType);
+  }
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  const entries = await db.auditLog.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    skip: (page - 1) * pageSize,
-    take: pageSize,
-  });
+  // Count total
+  const totalRow = await db
+    .prepare(`SELECT COUNT(*) as cnt FROM AuditLog ${whereClause}`)
+    .bind(...bindValues)
+    .first();
+  const total = (totalRow?.cnt as number) ?? 0;
+
+  // Paginated entries
+  const offset = (page - 1) * pageSize;
+  const entries = await db
+    .prepare(
+      `SELECT * FROM AuditLog ${whereClause} ORDER BY createdAt DESC LIMIT ? OFFSET ?`
+    )
+    .bind(...bindValues, pageSize, offset)
+    .all();
 
   // Lookup admin users in one query (no Prisma relation between
   // AuditLog and AdminUser — adminUserId is a plain string FK).
   const adminIds = Array.from(
-    new Set(entries.map((e) => e.adminUserId).filter(Boolean) as string[])
+    new Set(
+      (entries.results ?? [])
+        .map((e) => e.adminUserId)
+        .filter(Boolean) as string[]
+    )
   );
-  const adminUsers = adminIds.length
-    ? await db.adminUser.findMany({
-        where: { id: { in: adminIds } },
-        select: { id: true, displayName: true, externalId: true, role: true },
-      })
-    : [];
-  const adminUserById = new Map(adminUsers.map((u) => [u.id, u]));
+  let adminUserById = new Map<string, Record<string, unknown>>();
+  if (adminIds.length > 0) {
+    const placeholders = adminIds.map(() => "?").join(", ");
+    const adminUsers = await db
+      .prepare(
+        `SELECT id, displayName, externalId, role FROM AdminUser WHERE id IN (${placeholders})`
+      )
+      .bind(...adminIds)
+      .all();
+    adminUserById = new Map(
+      (adminUsers.results ?? []).map((u) => [u.id as string, u])
+    );
+  }
 
-  const items = entries.map((e) => {
+  const items = (entries.results ?? []).map((e) => {
     let metadata: unknown = null;
     if (e.metadataJson) {
       try {
-        metadata = JSON.parse(e.metadataJson);
+        metadata = JSON.parse(e.metadataJson as string);
       } catch {
         metadata = e.metadataJson; // fall back to raw string
       }
     }
     const adminUser = e.adminUserId
-      ? adminUserById.get(e.adminUserId) ?? null
+      ? (adminUserById.get(e.adminUserId as string) ?? null)
       : null;
     return {
       id: e.id,

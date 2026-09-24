@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
-import { db } from "@/lib/db";
+import { getDB } from "@/lib/db";
 import { fail, noStore, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
@@ -34,10 +33,10 @@ const BodySchema = z.object({
  *   4. Validate each `selectedValue` exists in the snapshot's option set.
  *   5. Compute `selectedScore` from the matched option (null for
  *      not_applicable).
- *   6. `db.$transaction`:
+ *   6. `db.batch`:
  *      - Insert ParticipationLedger row (participationType='environment',
  *        scopeKey='environment', status='submitted', submittedAt=now).
- *        If the unique constraint rejects the insert (P2002) → 409 with
+ *        If the unique constraint rejects the insert → 409 with
  *        MESSAGES.duplicateCampaign.
  *      - Generate responseGroupId = newResponseGroupId().
  *      - Insert one Response row per answer (no employeeHmac, no executiveId,
@@ -51,6 +50,8 @@ const BodySchema = z.object({
  * exposing employee identity.
  */
 export const POST = apiHandler(async (request: NextRequest) => {
+  const db = getDB();
+
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
 
@@ -71,10 +72,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
 
   // Load campaign.
-  const campaign = await db.campaign.findUnique({
-    where: { id: body.campaignId },
-    select: { id: true, status: true, startsAt: true, endsAt: true },
-  });
+  const campaign = await db.prepare(
+    "SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?"
+  ).bind(body.campaignId).first<{ id: string; status: string; startsAt: string; endsAt: string }>();
   if (!campaign || campaign.status !== "active") {
     return fail(MESSAGES.campaignClosed, 400);
   }
@@ -85,18 +85,23 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
 
   // Load all environment-section frozen snapshots for this campaign.
-  const snapshots = await db.campaignQuestionSnapshot.findMany({
-    where: { campaignId: campaign.id, section: "environment" },
-    include: { options: true },
-  });
+  const snapshotsRows = await db.prepare(
+    `SELECT id, isRequired FROM CampaignQuestionSnapshot
+     WHERE campaignId = ? AND section = 'environment'`
+  ).bind(campaign.id).all<{ id: string; isRequired: number }>();
 
-  // Index snapshots by ID for O(1) lookup.
-  const snapshotMap = new Map(
-    snapshots.map((s) => [s.id, s])
-  );
+  // Index snapshots by ID for O(1) lookup, loading options for each.
+  const snapshotMap = new Map<string, { id: string; isRequired: number; options: { value: string; score: number | null }[] }>();
+  for (const snap of snapshotsRows.results) {
+    const opts = await db.prepare(
+      "SELECT value, score FROM QuestionSnapshotOption WHERE snapshotId = ?"
+    ).bind(snap.id).all<{ value: string; score: number | null }>();
+    snapshotMap.set(snap.id, { ...snap, options: opts.results });
+  }
 
   // 3. Validate every required environment snapshot has an answer.
   const answeredIds = new Set(body.answers.map((a) => a.questionSnapshotId));
+  const snapshots = Array.from(snapshotMap.values());
   const missingRequired = snapshots.filter(
     (s) => s.isRequired && !answeredIds.has(s.id)
   );
@@ -134,54 +139,34 @@ export const POST = apiHandler(async (request: NextRequest) => {
     });
   }
 
-  // 6. Atomic insert: ledger + responses inside a single transaction.
+  // 6. Atomic insert: ledger + responses inside a single batch.
   //    The unique index on ParticipationLedger is the race-condition safety
   //    net — if two submissions race for the same employee + campaign +
   //    'environment' scope, exactly one will succeed; the other receives
-  //    P2002 from SQLite's unique-index enforcement, which we surface as
-  //    MESSAGES.duplicateCampaign.
+  //    a UNIQUE constraint error, which we surface as MESSAGES.duplicateCampaign.
+  const responseGroupId = newResponseGroupId();
   try {
-    await db.$transaction(async (tx) => {
-      // 6a. Insert the ledger row first — this is the duplicate gate.
-      //     We use create() (not upsert) so the unique constraint can reject
-      //     a concurrent submission.
-      await tx.participationLedger.create({
-        data: {
-          campaignId: campaign.id,
-          employeeHmac,
-          participationType: "environment",
-          scopeKey: "environment",
-          status: "submitted",
-          submittedAt: now,
-        },
-      });
+    // 6a. Build ledger insert statement.
+    const ledgerStmt = db.prepare(
+      `INSERT INTO ParticipationLedger (campaignId, employeeHmac, participationType, scopeKey, status, submittedAt)
+       VALUES (?, ?, 'environment', 'environment', 'submitted', ?)`
+    ).bind(campaign.id, employeeHmac, now);
 
-      // 6b. Generate fresh responseGroupId (random UUID — not derived from
-      //     identity).
-      const responseGroupId = newResponseGroupId();
+    // 6b. Build response insert statements — one per answer.
+    const responseStmts = responseRows.map((r) =>
+      db.prepare(
+        `INSERT INTO Response (campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType, submittedAt)
+         VALUES (?, null, ?, ?, ?, ?, 'environment', ?)`
+      ).bind(campaign.id, responseGroupId, r.questionSnapshotId, r.selectedValue, r.selectedScore, now)
+    );
 
-      // 6c. Insert one Response row per answer (no employeeHmac, no
-      //     executiveId — null for environment).
-      await tx.response.createMany({
-        data: responseRows.map((r) => ({
-          campaignId: campaign.id,
-          executiveId: null,
-          responseGroupId,
-          questionSnapshotId: r.questionSnapshotId,
-          selectedValue: r.selectedValue,
-          selectedScore: r.selectedScore,
-          responseType: "environment",
-          submittedAt: now,
-        })),
-      });
-
-      return responseGroupId;
-    });
+    // 6c. Execute as a batch.
+    await db.batch([ledgerStmt, ...responseStmts]);
   } catch (err) {
-    // P2002 = unique constraint violation — duplicate submission.
+    // UNIQUE constraint violation — duplicate submission.
     if (
-      err instanceof Prisma.PrismaClientKnownRequestError &&
-      err.code === "P2002"
+      err instanceof Error &&
+      err.message?.includes("UNIQUE constraint failed")
     ) {
       return fail(MESSAGES.duplicateCampaign, 409);
     }
