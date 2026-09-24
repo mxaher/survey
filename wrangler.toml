@@ -23,6 +23,3 @@ NODE_ENV = "production"
 directory = ".open-next/assets"
 binding = "ASSETS"
 
-# Build configuration
-[build]
-command = "npx @opennextjs/cloudflare build"
