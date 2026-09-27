@@ -81,9 +81,9 @@ export function QuestionCard({
     <Card
       className={cn(
         "py-4 transition-all duration-200 hover:shadow-sm",
-        // Subtle right-edge accent (RTL) for required questions.
+        // Subtle leading-edge accent (right edge in RTL) for required questions.
         question.isRequired &&
-          "border-e-2 border-e-primary/40 hover:border-r-primary/70"
+          "border-s-2 border-s-primary/40 hover:border-s-primary/70"
       )}
     >
       <CardHeader className="pb-3 gap-1.5">

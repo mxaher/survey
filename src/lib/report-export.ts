@@ -596,8 +596,8 @@ export async function tableToXlsx(table: ExportTable): Promise<Buffer> {
     wch: Math.max(14, Math.min(60, h.length + 8)),
   }));
   ws["!margins"] = {
-    insetInlineStart: 0.5,
-    insetInlineEnd: 0.5,
+    left: 0.5,
+    right: 0.5,
     top: 0.5,
     bottom: 0.5,
     header: 0.3,

@@ -475,7 +475,7 @@ export function TrendReportView() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                   data={dimensions}
-                  margin={{ top: 16, insetInlineEnd: 24, bottom: 60, insetInlineStart: 8 }}
+                  margin={{ top: 16, right: 24, bottom: 60, left: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis
@@ -568,7 +568,7 @@ export function TrendReportView() {
                         : 0,
                     evaluators: c.distinctEvaluators,
                   }))}
-                  margin={{ top: 16, insetInlineEnd: 24, bottom: 60, insetInlineStart: 8 }}
+                  margin={{ top: 16, right: 24, bottom: 60, left: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis

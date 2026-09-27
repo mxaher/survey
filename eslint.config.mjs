@@ -10,7 +10,12 @@ const __dirname = dirname(__filename);
 const eslintConfig = [
   ...nextCoreWebVitals,
   ...nextTypescript,
-  tailwindRtl.configs.recommended,
+  // Tailwind-classes-only preset: this codebase has no physical CSS-in-JS
+  // properties (all `style={{}}` objects are non-directional), and the
+  // css-in-js rules produce false positives on library option objects
+  // (recharts `margin`, SheetJS `!margins`, Radix enums), which --fix
+  // silently rewrote and broke chart layout + Excel export margins.
+  tailwindRtl.configs["recommended-tailwind"],
   {
   rules: {
     // TypeScript rules
@@ -50,10 +55,18 @@ const eslintConfig = [
 
     // Tailwind RTL rules
     "tailwind-rtl/tailwind/no-physical-classes": "error",
-    "tailwind-rtl/css-in-js/no-physical-properties": "error",
   },
 }, {
-  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]
+  ignores: [
+    "node_modules/**",
+    ".next/**",
+    ".open-next/**",
+    ".wrangler/**",
+    "out/**",
+    "build/**",
+    "next-env.d.ts",
+    "skills",
+  ]
 }];
 
 export default eslintConfig;

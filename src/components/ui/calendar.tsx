@@ -136,13 +136,17 @@ function Calendar({
           )
         },
         Chevron: ({ className, orientation, ...props }) => {
-          if (orientation === "start") {
+          // react-day-picker's Chevron `orientation` enum is
+          // "left" | "right" | "up" | "down" — no logical variant exists.
+          // eslint-disable-next-line tailwind-rtl/tailwind/no-physical-classes
+          if (orientation === "left") {
             return (
               <ChevronLeftIcon className={cn("size-4", className)} {...props} />
             )
           }
 
-          if (orientation === "end") {
+          // eslint-disable-next-line tailwind-rtl/tailwind/no-physical-classes
+          if (orientation === "right") {
             return (
               <ChevronRightIcon
                 className={cn("size-4", className)}

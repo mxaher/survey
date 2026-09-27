@@ -431,7 +431,7 @@ export function ExecutiveReportView({
                   <BarChart
                     data={chartData}
                     layout="vertical"
-                    margin={{ top: 8, insetInlineEnd: 24, bottom: 8, insetInlineStart: 8 }}
+                    margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                     <XAxis
@@ -652,7 +652,7 @@ function QuestionRow({ question }: { question: QuestionAggregate }) {
                 <BarChart
                   data={chartData}
                   layout="vertical"
-                  margin={{ top: 4, insetInlineEnd: 16, bottom: 4, insetInlineStart: 4 }}
+                  margin={{ top: 4, right: 16, bottom: 4, left: 4 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
