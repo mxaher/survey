@@ -28,10 +28,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ar" dir="rtl" suppressHydrationWarning>
-      <body
-        className={`${tajawal.variable} antialiased bg-background text-foreground`}
-      >
+    <html
+      lang="ar"
+      dir="rtl"
+      className={tajawal.variable}
+      suppressHydrationWarning
+    >
+      <body className="antialiased bg-background text-foreground">
         {/*
           next-themes injects its theme script with `fn.toString()`. When a
           bundler adds esbuild's `keepNames` helper (`__name`) to that function,
