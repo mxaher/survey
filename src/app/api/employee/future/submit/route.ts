@@ -1,11 +1,15 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { getDB } from "@/lib/db";
 import { fail, noStore, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
 import { isWithinActiveWindow, nowUtc } from "@/lib/time";
-import { newResponseGroupId } from "@/lib/employee-hmac";
+import {
+  newResponseGroupId,
+  isHmacSecretMissingInProduction,
+} from "@/lib/employee-hmac";
 import { validateSelections } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
@@ -53,6 +57,13 @@ export const POST = apiHandler(async (request: NextRequest) => {
 
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
+  // Admin-preview identities may render the survey but must never write
+  // participation data — each impersonated address would mint a fresh HMAC.
+  if (employee.source === "dev") return fail(MESSAGES.previewBanner, 403);
+  // Refuse rather than silently signing with the shared dev literal.
+  if (isHmacSecretMissingInProduction()) {
+    return fail(MESSAGES.serviceUnavailable, 503);
+  }
 
   const employeeHmac = await getEmployeeHmac();
   if (!employeeHmac) return fail(MESSAGES.unauthorized, 401);
@@ -154,19 +165,22 @@ export const POST = apiHandler(async (request: NextRequest) => {
   // 6. Atomic insert.
   const responseGroupId = newResponseGroupId();
   try {
-    // 6a. Build ledger insert statement.
+    // 6a. Build ledger insert statement. `id` is bound explicitly: without
+    //     it SQLite leaves the TEXT primary key NULL on every row.
     const ledgerStmt = db.prepare(
-      `INSERT INTO ParticipationLedger (campaignId, employeeHmac, participationType, scopeKey, status, submittedAt)
-       VALUES (?, ?, 'future', 'future', 'submitted', ?)`
-    ).bind(campaign.id, employeeHmac, now);
+      `INSERT INTO ParticipationLedger (id, campaignId, employeeHmac, participationType, scopeKey, status, submittedAt)
+       VALUES (?, ?, ?, 'future', 'future', 'submitted', ?)`
+    ).bind(randomUUID(), campaign.id, employeeHmac, now);
 
     // 6b. Build response insert statements — one per (snapshot, selectedValue) pair.
     //     selectedScore is null — future questions are categorical.
+    //     Deliberately NOT bound to the ledger's `now`: sharing a timestamp
+    //     would let `JOIN ... ON submittedAt` link employeeHmac to answers.
     const responseStmts = responseRows.map((r) =>
       db.prepare(
-        `INSERT INTO Response (campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType, submittedAt)
-         VALUES (?, null, ?, ?, ?, null, 'future', ?)`
-      ).bind(campaign.id, responseGroupId, r.questionSnapshotId, r.selectedValue, now)
+        `INSERT INTO Response (id, campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType)
+         VALUES (?, ?, null, ?, ?, ?, null, 'future')`
+      ).bind(randomUUID(), campaign.id, responseGroupId, r.questionSnapshotId, r.selectedValue)
     );
 
     // 6c. Execute as a batch.

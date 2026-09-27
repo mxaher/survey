@@ -24,6 +24,17 @@ export interface VerifiedEmployee {
   department?: string;
   isActive: boolean;
   displayName?: string;
+  /**
+   * Where this identity came from.
+   *   "session" — an authenticated employee session (email + password).
+   *   "dev"     — the admin Employee Picker impersonation cookie.
+   *
+   * `"dev"` identities may render the employee experience for preview, but
+   * they are refused on every submit endpoint: otherwise an admin could pick
+   * an arbitrary address and cast fabricated votes (the participation HMAC is
+   * derived per address, so each pick would be a fresh, "valid" participant).
+   */
+  source?: "session" | "dev";
 }
 
 const DEV_EMPLOYEE_COOKIE = "almrshd_dev_employee";
@@ -55,6 +66,7 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
       department: row.department ?? undefined,
       role: "employee",
       isActive: true,
+      source: "session",
     };
   }
 
@@ -71,7 +83,9 @@ async function readDevEmployeeCookie(): Promise<VerifiedEmployee | null> {
   try {
     const parsed = JSON.parse(raw) as VerifiedEmployee;
     if (!parsed.externalId) return null;
-    return { ...parsed, isActive: parsed.isActive ?? true };
+    // Forced last: the cookie payload is caller-supplied, so it must never be
+    // able to claim `source: "session"` and reach the submit endpoints.
+    return { ...parsed, source: "dev", isActive: parsed.isActive ?? true };
   } catch {
     return null;
   }

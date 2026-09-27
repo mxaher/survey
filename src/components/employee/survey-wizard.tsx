@@ -1241,6 +1241,10 @@ function StepReview({
             </span>
           </Label>
 
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {MESSAGES.anonymityNotice}
+          </p>
+
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-1">
             <Button
               variant="ghost"

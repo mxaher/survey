@@ -24,6 +24,7 @@ describe("migrations + approved question bank seed", () => {
       "0005_registration.sql",
       "0006_scoring_schema.sql",
       "0007_question_bank_seed.sql",
+      "0008_privacy_hardening.sql",
     ]);
     db.close();
   });

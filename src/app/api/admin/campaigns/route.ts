@@ -72,7 +72,7 @@ const createSchema = z
     startsAt: z.coerce.date().optional().nullable(),
     endsAt: z.coerce.date().optional().nullable(),
     timezone: z.string().trim().default("Asia/Riyadh"),
-    minimumReportingThreshold: z.coerce.number().int().min(1).default(5),
+    minimumReportingThreshold: z.coerce.number().int().min(1).default(7),
     enableEnvironmentSurvey: z.coerce.boolean().default(true),
     enableFutureSurvey: z.coerce.boolean().default(true),
     allowMultipleExecutiveEvaluations: z.coerce.boolean().default(true),

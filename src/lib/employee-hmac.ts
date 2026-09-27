@@ -36,6 +36,20 @@ export function isHmacSecretConfigured(): boolean {
 }
 
 /**
+ * True when a submission must be refused because production would otherwise
+ * fall back to the known dev literal — a forgeable key that would let anyone
+ * mint unlimited "distinct employees" and spam the participation ledger.
+ *
+ * Callers should return a generic 503; never leak the reason to the client.
+ */
+export function isHmacSecretMissingInProduction(): boolean {
+  return (
+    readWorkerEnv("NODE_ENV") === "production" &&
+    !isHmacSecretConfigured()
+  );
+}
+
+/**
  * Normalize the employee identifier: trim + lowercase email-style input so
  * the HMAC is stable regardless of minor formatting differences.
  */

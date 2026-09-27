@@ -1,11 +1,15 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { getDB } from "@/lib/db";
 import { fail, noStore, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
 import { isWithinActiveWindow, nowUtc } from "@/lib/time";
-import { newResponseGroupId } from "@/lib/employee-hmac";
+import {
+  newResponseGroupId,
+  isHmacSecretMissingInProduction,
+} from "@/lib/employee-hmac";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +55,13 @@ export const POST = apiHandler(async (request: NextRequest) => {
 
   const employee = await getVerifiedEmployee();
   if (!employee) return fail(MESSAGES.unauthorized, 401);
+  // Admin-preview identities may render the survey but must never write
+  // participation data — each impersonated address would mint a fresh HMAC.
+  if (employee.source === "dev") return fail(MESSAGES.previewBanner, 403);
+  // Refuse rather than silently signing with the shared dev literal.
+  if (isHmacSecretMissingInProduction()) {
+    return fail(MESSAGES.serviceUnavailable, 503);
+  }
 
   const employeeHmac = await getEmployeeHmac();
   if (!employeeHmac) return fail(MESSAGES.unauthorized, 401);
@@ -70,8 +81,17 @@ export const POST = apiHandler(async (request: NextRequest) => {
 
   // Load campaign.
   const campaign = await db.prepare(
-    "SELECT id, status, startsAt, endsAt FROM Campaign WHERE id = ?"
-  ).bind(body.campaignId).first<{ id: string; status: string; startsAt: string; endsAt: string }>();
+    `SELECT id, status, startsAt, endsAt,
+            allowMultipleExecutiveEvaluations, maxExecutives
+     FROM Campaign WHERE id = ?`
+  ).bind(body.campaignId).first<{
+    id: string;
+    status: string;
+    startsAt: string;
+    endsAt: string;
+    allowMultipleExecutiveEvaluations: number;
+    maxExecutives: number | null;
+  }>();
   if (!campaign || campaign.status !== "active") {
     return fail(MESSAGES.campaignClosed, 400);
   }
@@ -96,6 +116,29 @@ export const POST = apiHandler(async (request: NextRequest) => {
   ) {
     // Not authorized to evaluate this executive in this campaign.
     return fail(MESSAGES.unauthorized, 403);
+  }
+
+  // 3b. Enforce the campaign's executive limits. Previously these were only
+  //     applied in the browser (survey-wizard / executive-picker), so a
+  //     direct POST could exceed them. `minExecutives` is a floor, not a
+  //     ceiling — it cannot reject a submission and is validated at config
+  //     time instead.
+  const priorCountRow = await db.prepare(
+    `SELECT COUNT(*) AS c FROM ParticipationLedger
+      WHERE campaignId = ? AND employeeHmac = ?
+        AND participationType = 'executive'`
+  ).bind(campaign.id, employeeHmac).first<{ c: number }>();
+  const evaluatedCount = priorCountRow?.c ?? 0;
+
+  if (campaign.allowMultipleExecutiveEvaluations !== 1 && evaluatedCount >= 1) {
+    return fail(MESSAGES.duplicateCampaign, 409);
+  }
+  if (
+    typeof campaign.maxExecutives === "number" &&
+    campaign.maxExecutives > 0 &&
+    evaluatedCount >= campaign.maxExecutives
+  ) {
+    return fail(MESSAGES.executiveLimitReached, 409);
   }
 
   // Load all leadership-section frozen snapshots for this campaign.
@@ -155,18 +198,21 @@ export const POST = apiHandler(async (request: NextRequest) => {
   // 6. Atomic insert.
   const responseGroupId = newResponseGroupId();
   try {
-    // 6a. Build ledger insert statement.
+    // 6a. Build ledger insert statement. `id` is bound explicitly: without
+    //     it SQLite leaves the TEXT primary key NULL on every row.
     const ledgerStmt = db.prepare(
-      `INSERT INTO ParticipationLedger (campaignId, executiveId, employeeHmac, participationType, scopeKey, status, submittedAt)
-       VALUES (?, ?, ?, 'executive', ?, 'submitted', ?)`
-    ).bind(campaign.id, body.executiveId, employeeHmac, body.executiveId, now);
+      `INSERT INTO ParticipationLedger (id, campaignId, executiveId, employeeHmac, participationType, scopeKey, status, submittedAt)
+       VALUES (?, ?, ?, ?, ?, 'executive', ?, 'submitted', ?)`
+    ).bind(randomUUID(), campaign.id, body.executiveId, employeeHmac, body.executiveId, now);
 
     // 6b. Build response insert statements — one per answer.
+    //     Deliberately NOT bound to the ledger's `now`: sharing a timestamp
+    //     would let `JOIN ... ON submittedAt` link employeeHmac to answers.
     const responseStmts = responseRows.map((r) =>
       db.prepare(
-        `INSERT INTO Response (campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType, submittedAt)
-         VALUES (?, ?, ?, ?, ?, ?, 'executive', ?)`
-      ).bind(campaign.id, body.executiveId, responseGroupId, r.questionSnapshotId, r.selectedValue, r.selectedScore, now)
+        `INSERT INTO Response (id, campaignId, executiveId, responseGroupId, questionSnapshotId, selectedValue, selectedScore, responseType)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'executive')`
+      ).bind(randomUUID(), campaign.id, body.executiveId, responseGroupId, r.questionSnapshotId, r.selectedValue, r.selectedScore)
     );
 
     // 6c. Execute as a batch.
