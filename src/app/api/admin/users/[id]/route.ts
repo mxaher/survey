@@ -3,6 +3,8 @@ import { z } from "zod";
 import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
+import { revokeAdminSessions } from "@/lib/admin-auth";
+import { hashPassword } from "@/lib/auth";
 import { writeAudit } from "@/lib/audit";
 import { MESSAGES } from "@/lib/messages";
 
@@ -61,6 +63,10 @@ const patchSchema = z.object({
     .nullable(),
   role: z.enum(["SUPER_ADMIN", "SURVEY_ADMIN"]).optional(),
   isActive: z.coerce.boolean().optional(),
+  password: z
+    .string()
+    .min(8, "كلمة المرور يجب أن تكون 8 أحرف على الأقل.")
+    .optional(),
 });
 
 /**
@@ -92,6 +98,17 @@ export const PATCH = apiHandler(
       .first();
     if (!existing) return fail("المستخدم غير موجود.", 404);
 
+    // Hash a password change before it reaches the generic update loop —
+    // plaintext must never be written to the table.
+    let newHash: string | null = null;
+    let newSalt: string | null = null;
+    if (input.password !== undefined) {
+      const hashed = await hashPassword(input.password);
+      newHash = hashed.hash;
+      newSalt = hashed.salt;
+      delete input.password;
+    }
+
     // Build the update payload, skipping undefined fields.
     const updates: string[] = [];
     const bindValues: unknown[] = [];
@@ -100,6 +117,11 @@ export const PATCH = apiHandler(
         updates.push(`${k} = ?`);
         bindValues.push(v);
       }
+    }
+
+    if (newHash) {
+      updates.push("passwordHash = ?", "salt = ?");
+      bindValues.push(newHash, newSalt);
     }
 
     if (updates.length === 0) return fail("صيغة الطلب غير صالحة.", 400);
@@ -118,6 +140,11 @@ export const PATCH = apiHandler(
       .bind(id)
       .first();
 
+    // A password change or a deactivation must end any live sessions.
+    if (newHash || !updated.isActive) {
+      await revokeAdminSessions(id);
+    }
+
     await writeAudit({
       adminUserId: admin.adminId,
       action: "admin_user.update",
@@ -125,6 +152,7 @@ export const PATCH = apiHandler(
       entityId: id,
       metadata: {
         fields: Object.keys(input),
+        passwordChanged: Boolean(newHash),
         previousRole: existing.role,
         newRole: updated.role,
         previousIsActive: existing.isActive,
@@ -185,6 +213,8 @@ export const DELETE = apiHandler(
       )
       .bind(id)
       .run();
+
+    await revokeAdminSessions(id);
 
     await writeAudit({
       adminUserId: admin.adminId,

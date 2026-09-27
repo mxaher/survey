@@ -129,6 +129,7 @@ export function UsersView() {
       displayName?: string;
       email?: string;
       role: AdminUser["role"];
+      password: string;
     }) =>
       mutationFetch<AdminUser>(`/api/admin/users`, "POST", input),
     onSuccess: async (res) => {
@@ -167,6 +168,7 @@ export function UsersView() {
         email: string | null;
         role: AdminUser["role"];
         isActive: boolean;
+        password: string;
       }>;
     }) => mutationFetch<AdminUser>(`/api/admin/users/${id}`, "PATCH", body),
     onSuccess: async (res) => {
@@ -464,11 +466,13 @@ function AddUserForm({
     displayName?: string;
     email?: string;
     role: AdminUser["role"];
+    password: string;
   }) => void;
 }) {
   const [externalId, setExternalId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [role, setRole] = useState<AdminUser["role"]>("SURVEY_ADMIN");
 
   const submit = () => {
@@ -478,6 +482,7 @@ function AddUserForm({
       displayName: displayName.trim() || undefined,
       email: email.trim() || undefined,
       role,
+      password,
     });
   };
 
@@ -524,6 +529,19 @@ function AddUserForm({
           />
         </div>
         <div className="flex flex-col gap-1">
+          <Label htmlFor="au-password">كلمة المرور (إلزامي)</Label>
+          <Input
+            id="au-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="8 أحرف على الأقل"
+            className="min-h-11"
+            autoComplete="new-password"
+            dir="ltr"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
           <Label htmlFor="au-role">الدور</Label>
           <Select
             value={role}
@@ -541,7 +559,11 @@ function AddUserForm({
         </div>
       </div>
       <DialogFooter>
-        <Button onClick={submit} disabled={pending || !externalId.trim()} className="min-h-11">
+        <Button
+          onClick={submit}
+          disabled={pending || !externalId.trim() || password.length < 8}
+          className="min-h-11"
+        >
           {pending ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
@@ -561,16 +583,21 @@ function EditUserForm({
 }: {
   user: AdminUser;
   pending: boolean;
-  onSubmit: (body: Partial<AdminUser>) => void;
+  onSubmit: (body: Partial<AdminUser> & { password?: string }) => void;
 }) {
   const [displayName, setDisplayName] = useState(user.displayName ?? "");
   const [email, setEmail] = useState(user.email ?? "");
   const [role, setRole] = useState<AdminUser["role"]>(user.role);
+  const [password, setPassword] = useState("");
+
+  const passwordChanged = password.length > 0;
+  const passwordValid = !passwordChanged || password.length >= 8;
 
   const dirty =
     displayName.trim() !== (user.displayName ?? "") ||
     email.trim() !== (user.email ?? "") ||
-    role !== user.role;
+    role !== user.role ||
+    passwordChanged;
 
   return (
     <>
@@ -617,6 +644,19 @@ function EditUserForm({
             </SelectContent>
           </Select>
         </div>
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="eu-password">كلمة مرور جديدة (اختياري)</Label>
+          <Input
+            id="eu-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="اتركها فارغة للاحتفاظ بالحالية"
+            className="min-h-11"
+            autoComplete="new-password"
+            dir="ltr"
+          />
+        </div>
       </div>
       <DialogFooter>
         <Button
@@ -625,9 +665,10 @@ function EditUserForm({
               displayName: displayName.trim() || null,
               email: email.trim() || null,
               role,
+              ...(passwordChanged ? { password } : {}),
             })
           }
-          disabled={pending || !dirty}
+          disabled={pending || !dirty || !passwordValid}
           className="min-h-11"
         >
           {pending ? (

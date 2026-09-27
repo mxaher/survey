@@ -681,7 +681,8 @@ function DevImpersonationPanel() {
           وضع التطوير — انتحال هوية الموظف
         </CardTitle>
         <CardDescription>
-          في بيئة التطوير فقط. يحدد هوية الموظف الحالية لاختبار تدفق الاستبيان.
+          أداة معاينة متاحة للمدير فقط: تتيح تجربة الاستبيان بهوية موظف دون
+          تسجيل دخول حقيقية. يُسجَّل أي رد يُرسل أثناء المعاينة بشكل طبيعي.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

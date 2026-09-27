@@ -34,6 +34,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { APP_TITLE, MESSAGES } from "@/lib/messages";
 import { ImpersonationBanner } from "./impersonation-banner";
+import { AuthCard } from "@/components/auth/auth-card";
 import { SurveyIntro } from "./survey-intro";
 import { SurveyWizard } from "./survey-wizard";
 import { SuccessScreen } from "./success-screen";
@@ -41,7 +42,14 @@ import { useWizardStore } from "./wizard-store";
 import { fetchEmployeeApi, ApiError } from "./api";
 import type { ActiveCampaign } from "./types";
 
-type Phase = "loading" | "error" | "no-campaign" | "intro" | "wizard" | "success";
+type Phase =
+  | "loading"
+  | "unauthorized"
+  | "error"
+  | "no-campaign"
+  | "intro"
+  | "wizard"
+  | "success";
 
 interface PsShape {
   environmentSubmitted: boolean;
@@ -121,8 +129,8 @@ export function EmployeeApp() {
   if (campaignQuery.isLoading) {
     phase = "loading";
   } else if (unauthorized) {
-    // No campaign loaded yet (and 401) → show impersonation prompt.
-    phase = "loading";
+    // 401 — nobody is signed in. Show the sign-in form.
+    phase = "unauthorized";
   } else if (campaignQuery.isError) {
     // Non-401 failure (server error, network error) — never fall through to
     // the intro card with an undefined campaign.
@@ -169,6 +177,8 @@ export function EmployeeApp() {
 
         {phase === "loading" ? (
           <IntroSkeleton />
+        ) : phase === "unauthorized" ? (
+          <AuthCard />
         ) : phase === "no-campaign" ? (
           <NoActiveCampaignCard />
         ) : phase === "error" ? (

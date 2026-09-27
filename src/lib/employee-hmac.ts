@@ -17,6 +17,22 @@ import { createHmac, randomUUID } from "crypto";
 const DEV_FALLBACK_SECRET = "dev-almrshd-secret-do-not-use-in-prod";
 
 /**
+ * Resolve the HMAC secret: the real secret comes from the worker secret
+ * `EMPLOYEE_HMAC_SECRET` (set with `wrangler secret put EMPLOYEE_HMAC_SECRET`).
+ * The dev fallback only applies before that secret exists.
+ */
+export function getHmacSecret(): string {
+  const fromEnv = process.env.EMPLOYEE_HMAC_SECRET?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : DEV_FALLBACK_SECRET;
+}
+
+/** Whether a real secret is configured (surfaced in admin system stats). */
+export function isHmacSecretConfigured(): boolean {
+  const fromEnv = process.env.EMPLOYEE_HMAC_SECRET?.trim();
+  return Boolean(fromEnv && fromEnv.length > 0);
+}
+
+/**
  * Normalize the employee identifier: trim + lowercase email-style input so
  * the HMAC is stable regardless of minor formatting differences.
  */
@@ -26,7 +42,7 @@ export function normalizeEmployeeId(raw: string): string {
 
 export function computeEmployeeHmac(rawEmployeeId: string, secret?: string): string {
   const normalized = normalizeEmployeeId(rawEmployeeId);
-  const hmacSecret = secret || DEV_FALLBACK_SECRET;
+  const hmacSecret = secret || getHmacSecret();
   return createHmac("sha256", hmacSecret).update(normalized).digest("hex");
 }
 

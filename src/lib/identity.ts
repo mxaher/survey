@@ -1,22 +1,22 @@
 import { cookies } from "next/headers";
+import { getDB } from "@/lib/db";
 import { computeEmployeeHmac, normalizeEmployeeId } from "@/lib/employee-hmac";
+import { getSession } from "@/lib/session";
+import { getAdminUser } from "@/lib/admin-auth";
 
 /**
- * Dev-mode EmployeeIdentityProvider (spec §6).
+ * Employee identity provider (spec §6).
  *
- * In production this would call Cloudflare Access / Microsoft Entra ID /
- * the company SSO via the `EmployeeIdentityProvider` interface. Here we
- * implement a clearly-labeled dev mode: the admin "impersonates" an
- * employee by setting a cookie through the admin UI (Employee Picker),
- * and the server computes the HMAC from that identifier.
+ * Primary source of truth: an authenticated **employee session** created by
+ * `POST /api/auth/login` (email + password, PBKDF2). The server looks the
+ * account up, and the identifier it derives the HMAC from is the account's
+ * email — never stored alongside responses, only as an HMAC in
+ * `participation_ledger` (spec §5.2).
  *
- * The identifier is NEVER persisted to the responses layer — only its
- * HMAC lives in `participation_ledger`, which is never joined to
- * responses (see spec §5.2).
- *
- * The UI clearly labels this as dev mode and the README must call out
- * that residual risk from the identity provider / infra logs is
- * "de-identified," not "100% anonymous."
+ * Secondary source: the dev impersonation cookie written by the admin
+ * Employee Picker. It is only honored for an **authenticated admin**, so it
+ * works as an admin preview tool instead of a way for anyone to assume an
+ * arbitrary identity.
  */
 export interface VerifiedEmployee {
   externalId: string;
@@ -29,8 +29,42 @@ export interface VerifiedEmployee {
 const DEV_EMPLOYEE_COOKIE = "almrshd_dev_employee";
 const DEV_EMPLOYEE_LIST_COOKIE = "almrshd_dev_employees";
 
-/** Get the currently impersonated employee (dev mode). Returns null if none. */
+interface EmployeeUserRow {
+  id: string;
+  email: string;
+  displayName: string | null;
+  department: string | null;
+  isActive: number;
+  banned: number;
+}
+
+/** Get the current employee identity. Returns null when nobody is signed in. */
 export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
+  const session = await getSession();
+
+  if (session?.employeeUserId) {
+    const db = getDB();
+    const row = await db
+      .prepare("SELECT * FROM EmployeeUser WHERE id = ?")
+      .bind(session.employeeUserId)
+      .first<EmployeeUserRow>();
+    if (!row || !row.isActive || row.banned) return null;
+    return {
+      externalId: row.email,
+      displayName: row.displayName ?? row.email,
+      department: row.department ?? undefined,
+      role: "employee",
+      isActive: true,
+    };
+  }
+
+  // Dev impersonation preview — admins only.
+  const admin = await getAdminUser();
+  if (!admin) return null;
+  return readDevEmployeeCookie();
+}
+
+async function readDevEmployeeCookie(): Promise<VerifiedEmployee | null> {
   const store = await cookies();
   const raw = store.get(DEV_EMPLOYEE_COOKIE)?.value;
   if (!raw) return null;
@@ -43,7 +77,7 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
   }
 }
 
-/** Sets the dev-impersonated employee (called from the admin Employee Picker). */
+/** Sets the dev-impersonated employee (admin Employee Picker preview). */
 export async function setDevEmployee(emp: VerifiedEmployee): Promise<void> {
   const store = await cookies();
   store.set(DEV_EMPLOYEE_COOKIE, JSON.stringify(emp), {
@@ -60,12 +94,12 @@ export async function clearDevEmployee(): Promise<void> {
   store.delete(DEV_EMPLOYEE_COOKIE);
 }
 
-/** Lists the known dev-mode employees (set by the admin via System Settings). */
+/** Lists the known preview employees (set by the admin via System Settings). */
 export async function listDevEmployees(): Promise<VerifiedEmployee[]> {
   const store = await cookies();
   const raw = store.get(DEV_EMPLOYEE_LIST_COOKIE)?.value;
   if (!raw) {
-    // Default dev roster — clearly fake, never real PII.
+    // Default preview roster — clearly fake, never real PII.
     return [
       { externalId: "dev-emp-001@almrshd.local", displayName: "موظف تجريبي 1", department: "العقارات", isActive: true },
       { externalId: "dev-emp-002@almrshd.local", displayName: "موظف تجريبي 2", department: "المقاولات", isActive: true },
@@ -91,7 +125,7 @@ export async function setDevEmployeesList(list: VerifiedEmployee[]): Promise<voi
   });
 }
 
-/** Returns the HMAC of the currently impersonated employee, or null. */
+/** Returns the HMAC of the current employee identity, or null. */
 export async function getEmployeeHmac(secret?: string): Promise<string | null> {
   const emp = await getVerifiedEmployee();
   if (!emp) return null;

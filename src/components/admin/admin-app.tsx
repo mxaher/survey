@@ -17,6 +17,7 @@
  *   ?view=admin&tab=reports&sub=executive&id=xxx&execId=yyy → executive report
  *   ?view=admin&tab=audit                          → audit log
  *   ?view=admin&tab=settings                       → system settings
+ *   ?view=admin&tab=employees                      → employee accounts
  *   ?view=admin&tab=users                         → admin users (SUPER_ADMIN only)
  *
  * Each tab is a leaf component `export function <Name>()` at a known path.
@@ -38,6 +39,7 @@ import {
   LogOut,
   Search,
   ChevronDown,
+  UserRound,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -60,6 +62,7 @@ import { Menu } from "lucide-react";
 import { CommandPalette } from "@/components/admin/command-palette";
 import { ThemeToggle } from "@/components/shared/theme-toggle";
 import { NotificationsBell } from "@/components/shared/notifications-bell";
+import { AuthCard } from "@/components/auth/auth-card";
 
 // Lazy-load each tab's content. Paths are the contract for the subagents.
 const DashboardView = dynamic(
@@ -126,6 +129,10 @@ const UsersView = dynamic(
   () => import("@/components/admin/users/users-view").then((m) => m.UsersView),
   { ssr: false }
 );
+const EmployeesView = dynamic(
+  () => import("@/components/admin/users/employees-view").then((m) => m.EmployeesView),
+  { ssr: false }
+);
 
 const NAV = [
   { tab: "dashboard",   labelAr: "لوحة التحكم",            icon: LayoutDashboard },
@@ -134,7 +141,8 @@ const NAV = [
   { tab: "executives",  labelAr: "المسؤولون والمديرون",     icon: Users },
   { tab: "reports",     labelAr: "النتائج / التقارير",      icon: BarChart3 },
   { tab: "audit",       labelAr: "سجل العمليات",            icon: ScrollText },
-  { tab: "settings",    labelAr: "إعدادات النظام",          icon: Settings },
+  { tab: "settings",    labelAr: "إعدادات النظام",            icon: Settings },
+  { tab: "employees",   labelAr: "حسابات الموظفين",           icon: UserRound },
   { tab: "users",       labelAr: "مستخدمو الإدارة",          icon: ShieldCheck, superAdminOnly: true },
 ] as const;
 
@@ -149,12 +157,24 @@ export function AdminApp() {
   const router = useRouter();
   const tab = sp.get("tab") ?? "dashboard";
 
-  const { data: admin } = useQuery({
+  const adminQuery = useQuery({
     queryKey: ["admin-me"],
     queryFn: () =>
       fetchJson<{ ok: boolean; data: { adminId: string; externalId: string; displayName?: string; role: string } | null }>(
         "/api/admin/me"
       ),
+    retry: false,
+  });
+  const admin = adminQuery.data;
+
+  // Only needed while signed out: decides between the login form and the
+  // first-run "create the admin account" form.
+  const setupQuery = useQuery({
+    queryKey: ["auth-setup"],
+    queryFn: () =>
+      fetchJson<{ ok: boolean; data: { needed: boolean } }>("/api/auth/setup"),
+    enabled: adminQuery.isError,
+    retry: false,
   });
 
   const isSuperAdmin = admin?.data?.role === "SUPER_ADMIN";
@@ -173,6 +193,23 @@ export function AdminApp() {
   const sub = sp.get("sub");
   const id = sp.get("id");
   const execId = sp.get("execId");
+
+  // Not signed in (or session expired) → the auth card owns the screen.
+  if (adminQuery.isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    );
+  }
+  if (adminQuery.isError) {
+    return (
+      <AuthCard
+        standalone
+        mode={setupQuery.data?.data?.needed ? "setup" : "login"}
+      />
+    );
+  }
 
   let content: React.ReactNode;
   switch (tab) {
@@ -198,6 +235,7 @@ export function AdminApp() {
       break;
     case "audit":      content = <AuditView />; break;
     case "settings":   content = <SettingsView />; break;
+    case "employees":  content = <EmployeesView />; break;
     case "users":
       content = isSuperAdmin ? <UsersView /> : null;
       break;

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
+import { hashPassword } from "@/lib/auth";
+import { revokeAdminSessions } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
 import { MESSAGES } from "@/lib/messages";
 
@@ -78,6 +80,9 @@ const createSchema = z.object({
   email: z.string().trim().email("البريد الإلكتروني غير صالح.").optional().nullable(),
   role: z.enum(["SUPER_ADMIN", "SURVEY_ADMIN"]).default("SURVEY_ADMIN"),
   isActive: z.coerce.boolean().default(true),
+  password: z
+    .string()
+    .min(8, "كلمة المرور يجب أن تكون 8 أحرف على الأقل."),
 });
 
 /**
@@ -111,9 +116,10 @@ export const POST = apiHandler(async (request: NextRequest) => {
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const { hash, salt } = await hashPassword(input.password);
   await db
     .prepare(
-      "INSERT INTO AdminUser (id, externalId, displayName, email, role, isActive, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO AdminUser (id, externalId, displayName, email, role, isActive, passwordHash, salt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(
       id,
@@ -122,6 +128,8 @@ export const POST = apiHandler(async (request: NextRequest) => {
       input.email ?? null,
       input.role,
       input.isActive,
+      hash,
+      salt,
       now,
       now
     )

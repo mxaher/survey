@@ -1,6 +1,11 @@
-import { cookies } from "next/headers";
 import { getDB } from "@/lib/db";
-import { randomUUID, createHmac } from "crypto";
+import { verifyPassword } from "@/lib/auth";
+import {
+  createSession,
+  destroySession,
+  destroySessionsFor,
+  getSession,
+} from "@/lib/session";
 
 /**
  * Admin authentication (spec §6, §14).
@@ -11,19 +16,14 @@ import { randomUUID, createHmac } from "crypto";
  *                     publish/close/archive, view aggregated results,
  *                     export reports. Cannot identify respondents.
  *
- * Implementation note (adapted from the Cloudflare spec): in dev we use a
- * signed HTTP-only cookie that stores the admin's row id in
- * `admin_users`. The cookie value is an opaque session token, NOT the
- * admin's external_id, so it can be rotated. For now the dev-mode
- * bootstrap creates a default SURVEY_ADMIN row at first run.
+ * Ported from the fifa2026-vercel auth model: email + password (PBKDF2)
+ * checked against `AdminUser.passwordHash`/`salt`, then an opaque random
+ * token row in `Session` handed to the browser as an httpOnly cookie.
  *
- * In production this should be replaced with Cloudflare Access / Entra ID
- * / SSO via the same `getAdminUser()` interface so the rest of the app
- * does not need to change.
+ * NOTE: the pre-auth dev bootstrap that auto-created a session for every
+ * visitor has been removed — an anonymous request now gets `null` and every
+ * admin API answers 401.
  */
-const ADMIN_SESSION_COOKIE = "almrshd_admin_session";
-const ADMIN_SESSION_SECRET_DEFAULT = "dev-admin-secret-do-not-use-in-prod";
-
 export type AdminRole = "SUPER_ADMIN" | "SURVEY_ADMIN";
 
 export interface AdminSession {
@@ -34,123 +34,90 @@ export interface AdminSession {
   role: AdminRole;
 }
 
-/** Build an opaque session token: `${adminId}.${hmacOfAdminId}`. */
-function makeSessionToken(adminId: string, secret: string): string {
-  const mac = createHmac("sha256", secret).update(adminId).digest("hex");
-  return `${adminId}.${mac}`;
+export interface AdminCredentials {
+  id: string;
+  externalId: string;
+  displayName: string | null;
+  email: string | null;
+  role: AdminRole;
+  isActive: number | boolean;
+  passwordHash: string | null;
+  salt: string | null;
 }
 
-function parseSessionToken(token: string, secret: string): string | null {
-  const [adminId, mac] = token.split(".");
-  if (!adminId || !mac) return null;
-  const expected = createHmac("sha256", secret).update(adminId).digest("hex");
-  // constant-time-ish compare
-  if (mac.length !== expected.length) return null;
-  let diff = 0;
-  for (let i = 0; i < mac.length; i++) diff |= mac.charCodeAt(i) ^ expected.charCodeAt(i);
-  return diff === 0 ? adminId : null;
-}
+/** Get the currently authenticated admin, or null. */
+export async function getAdminUser(): Promise<AdminSession | null> {
+  const session = await getSession();
+  if (!session?.adminUserId) return null;
 
-/** Ensure a default SURVEY_ADMIN row exists in dev (bootstrap). */
-async function ensureBootstrapAdmin(db: D1Database): Promise<{ id: string; externalId: string; displayName: string; role: AdminRole }> {
-  let admin = await db.prepare(
-    `SELECT * FROM AdminUser WHERE externalId = ?`
-  ).bind("dev-survey-admin@almrshd.local").first() as Record<string, unknown> | null;
-
-  if (!admin) {
-    const id = crypto.randomUUID();
-    await db.prepare(
-      `INSERT INTO AdminUser (id, externalId, displayName, email, role, isActive, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
-    ).bind(id, "dev-survey-admin@almrshd.local", "مدير الاستبيان (تجريبي)", "dev-survey-admin@almrshd.local", "SURVEY_ADMIN").run();
-    admin = await db.prepare(`SELECT * FROM AdminUser WHERE id = ?`).bind(id).first() as Record<string, unknown>;
-  }
-  return {
-    id: admin!.id as string,
-    externalId: admin!.externalId as string,
-    displayName: (admin!.displayName as string) ?? "مدير الاستبيان",
-    role: (admin!.role as string) as AdminRole,
-  };
-}
-
-/** Get the currently authenticated admin (or null). In dev, auto-creates
- * a default SURVEY_ADMIN session so the platform is usable immediately. */
-export async function getAdminUser(secret?: string): Promise<AdminSession | null> {
   const db = getDB();
-  const sessionSecret = secret || ADMIN_SESSION_SECRET_DEFAULT;
-  const store = await cookies();
-  const token = store.get(ADMIN_SESSION_COOKIE)?.value;
+  const row = await db
+    .prepare("SELECT * FROM AdminUser WHERE id = ?")
+    .bind(session.adminUserId)
+    .first<AdminCredentials>();
 
-  let adminId: string | null = null;
-  if (token) adminId = parseSessionToken(token, sessionSecret);
-
-  if (!adminId) {
-    // Dev bootstrap: auto-create and sign in a default admin so the
-    // platform is usable end-to-end without an IdP. The UI must label
-    // this clearly as dev mode.
-    const a = await ensureBootstrapAdmin(db);
-    const newToken = makeSessionToken(a.id, sessionSecret);
-    store.set(ADMIN_SESSION_COOKIE, newToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      maxAge: 60 * 60 * 8,
-    });
-    return {
-      adminId: a.id,
-      externalId: a.externalId,
-      displayName: a.displayName,
-      role: a.role,
-    };
-  }
-
-  const row = await db.prepare(
-    `SELECT * FROM AdminUser WHERE id = ?`
-  ).bind(adminId).first() as Record<string, unknown> | null;
   if (!row || !row.isActive) return null;
+
   return {
-    adminId: row.id as string,
-    externalId: row.externalId as string,
-    displayName: (row.displayName as string) ?? undefined,
-    email: (row.email as string) ?? undefined,
-    role: row.role as AdminRole,
+    adminId: row.id,
+    externalId: row.externalId,
+    displayName: row.displayName ?? undefined,
+    email: row.email ?? undefined,
+    role: row.role,
   };
 }
 
-/** Sign in as an existing admin by externalId (used by the dev login screen). */
-export async function signInAdmin(externalId: string, secret?: string): Promise<AdminSession | null> {
+/**
+ * Verify email + password against the admin table and start a session.
+ * Returns null on any failure — callers must answer with a generic
+ * "invalid credentials" message so the endpoint cannot be used to probe
+ * which addresses exist.
+ */
+export async function signInAdminWithPassword(
+  login: string,
+  password: string
+): Promise<AdminSession | null> {
   const db = getDB();
-  const sessionSecret = secret || ADMIN_SESSION_SECRET_DEFAULT;
-  const row = await db.prepare(
-    `SELECT * FROM AdminUser WHERE externalId = ? AND isActive = 1`
-  ).bind(externalId).first() as Record<string, unknown> | null;
-  if (!row) return null;
-  const token = makeSessionToken(row.id as string, sessionSecret);
-  const store = await cookies();
-  store.set(ADMIN_SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 8,
-  });
+  const row = await db
+    .prepare(
+      "SELECT * FROM AdminUser WHERE lower(externalId) = lower(?) OR (email IS NOT NULL AND lower(email) = lower(?)) LIMIT 1"
+    )
+    .bind(login, login)
+    .first<AdminCredentials>();
+
+  if (!row || !row.isActive) return null;
+  if (!row.passwordHash || !row.salt) return null;
+
+  const valid = await verifyPassword(password, row.passwordHash, row.salt);
+  if (!valid) return null;
+
+  await createSession("admin", row.id);
+
   return {
-    adminId: row.id as string,
-    externalId: row.externalId as string,
-    displayName: (row.displayName as string) ?? undefined,
-    email: (row.email as string) ?? undefined,
-    role: row.role as AdminRole,
+    adminId: row.id,
+    externalId: row.externalId,
+    displayName: row.displayName ?? undefined,
+    email: row.email ?? undefined,
+    role: row.role,
   };
 }
 
 export async function signOutAdmin(): Promise<void> {
-  const store = await cookies();
-  store.delete(ADMIN_SESSION_COOKIE);
+  await destroySession();
 }
 
-/** Promote a SURVEY_ADMIN to SUPER_ADMIN (dev convenience). */
+/** Drop every session of an admin (used after password change / deactivate). */
+export async function revokeAdminSessions(adminId: string): Promise<void> {
+  await destroySessionsFor("admin", adminId);
+}
+
+/** Promote a SURVEY_ADMIN to SUPER_ADMIN. */
 export async function promoteToSuperAdmin(externalId: string): Promise<void> {
   const db = getDB();
-  await db.prepare(
-    `UPDATE AdminUser SET role = 'SUPER_ADMIN', updatedAt = datetime('now') WHERE externalId = ?`
-  ).bind(externalId).run();
+  await db
+    .prepare(
+      "UPDATE AdminUser SET role = 'SUPER_ADMIN', updatedAt = datetime('now') WHERE externalId = ?"
+    )
+    .bind(externalId)
+    .run();
 }

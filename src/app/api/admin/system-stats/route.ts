@@ -1,6 +1,7 @@
 import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
+import { isHmacSecretConfigured } from "@/lib/employee-hmac";
 import { MESSAGES } from "@/lib/messages";
 
 export const dynamic = "force-dynamic";
@@ -80,6 +81,9 @@ export const GET = apiHandler(async () => {
       snapshots: snapshots?.cnt ?? 0,
     },
     lastAuditAt: lastAudit?.createdAt ?? null,
+    // Whether the real `EMPLOYEE_HMAC_SECRET` worker secret is set (the
+    // response only reports its presence, never the value).
+    hmacSecretConfigured: isHmacSecretConfigured(),
     serverTime: new Date().toISOString(),
   });
 });
