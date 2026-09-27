@@ -67,6 +67,7 @@ type EmployeeUser = {
   department: string | null;
   isActive: number | boolean;
   banned: number | boolean;
+  emailVerified?: number | boolean;
   createdAt: string;
   updatedAt?: string;
 };
@@ -80,6 +81,7 @@ function avatarInitials(name: string): string {
 
 const isActive = (e: EmployeeUser) => Boolean(Number(e.isActive));
 const isBanned = (e: EmployeeUser) => Boolean(Number(e.banned));
+const isVerified = (e: EmployeeUser) => Boolean(Number(e.emailVerified));
 
 export function EmployeesView() {
   const qc = useQueryClient();
@@ -185,7 +187,7 @@ export function EmployeesView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="حسابات الموظفين"
-        description="حسابات الدخول لموظفي الاستبيان. تُستخدم الحسابات لتعريف المشارك دون كشف هويته في الردود."
+        description="حسابات الدخول لموظفي الاستبيان — تُنشأ من هنا، أو يسجّل الموظف نفسه ببريد ‎@almarshad.com‎ ويتطلب ذلك تأكيد البريد. تُستخدم الحسابات لتعريف المشارك دون كشف هويته في الردود."
         actions={
           <Dialog open={addOpen} onOpenChange={setAddOpen}>
             <DialogTrigger asChild>
@@ -216,7 +218,7 @@ export function EmployeesView() {
         <EmptyState
           icon={<UserRound className="h-8 w-8" />}
           title="لا توجد حسابات موظفين"
-          description="أنشئ حسابات للموظفين حتى يتمكنوا من تسجيل الدخول والمشاركة في الاستبيان."
+          description="أنشئ حسابات للموظفين من هنا، أو ادعهم للتسجيل عبر بريد ‎@almarshad.com‎ حتى يتمكنوا من تسجيل الدخول والمشاركة في الاستبيان."
           action={
             <Button onClick={() => setAddOpen(true)} className="min-h-11">
               <Plus className="h-4 w-4" />
@@ -260,10 +262,14 @@ export function EmployeesView() {
                   <TableCell>
                     {isBanned(e) ? (
                       <Badge variant="destructive">محظور</Badge>
-                    ) : isActive(e) ? (
-                      <Badge variant="secondary">نشط</Badge>
-                    ) : (
+                    ) : !isActive(e) ? (
                       <Badge variant="outline">معطّل</Badge>
+                    ) : !isVerified(e) ? (
+                      <Badge variant="secondary" className="bg-amber-500/15 text-amber-700 dark:text-amber-400">
+                        بانتظار تأكيد البريد
+                      </Badge>
+                    ) : (
+                      <Badge variant="secondary">نشط</Badge>
                     )}
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">

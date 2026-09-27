@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "crypto";
-import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { readWorkerEnv } from "@/lib/env";
 
 /**
  * Compute an HMAC-SHA256 of the normalized employee identifier.
@@ -21,36 +21,18 @@ const DEV_FALLBACK_SECRET = "dev-almrshd-secret-do-not-use-in-prod";
  * Resolve the HMAC secret: the real secret is the worker secret
  * `EMPLOYEE_HMAC_SECRET` (set with `wrangler secret put EMPLOYEE_HMAC_SECRET`).
  *
- * Read from the Cloudflare env binding first — the same source the app uses
- * for the D1 binding — because `process.env` is only populated on Workers
- * with a compatibility date of 2025-04-01 or later. `process.env` stays as a
- * secondary source. The dev fallback only applies when neither is set.
+ * Read through `readWorkerEnv` — the Cloudflare env binding (the same source
+ * the app uses for the D1 binding) — because `process.env` is only populated
+ * on Workers with a compatibility date of 2025-04-01 or later. The dev
+ * fallback only applies when neither source has the secret.
  */
 export function getHmacSecret(): string {
-  return readSecretFromEnv() ?? DEV_FALLBACK_SECRET;
+  return readWorkerEnv("EMPLOYEE_HMAC_SECRET") ?? DEV_FALLBACK_SECRET;
 }
 
 /** Whether a real secret is configured (surfaced in admin system stats). */
 export function isHmacSecretConfigured(): boolean {
-  return readSecretFromEnv() !== null;
-}
-
-function readSecretFromEnv(): string | null {
-  try {
-    const { env } = getCloudflareContext() as unknown as {
-      env: Record<string, unknown>;
-    };
-    const value = env.EMPLOYEE_HMAC_SECRET;
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  } catch {
-    // Outside a request context (scripts/tests) — fall through.
-  }
-
-  const fromProcess = process.env.EMPLOYEE_HMAC_SECRET?.trim();
-  if (fromProcess && fromProcess.length > 0) return fromProcess;
-  return null;
+  return readWorkerEnv("EMPLOYEE_HMAC_SECRET") !== undefined;
 }
 
 /**

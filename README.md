@@ -99,7 +99,10 @@ bun run db:migrate:prod
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
 npx wrangler secret put ADMIN_AUTH_SECRET
 
-# 4. Build and deploy
+# 4. Email for employee self-registration (verification links)
+npx wrangler secret put RESEND_API_KEY   # optional: Mailjet keys work too
+
+# 5. Build and deploy
 bun run deploy
 ```
 
@@ -127,7 +130,21 @@ cp .dev.vars.example .dev.vars
 # Production: set via Wrangler secrets
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
 npx wrangler secret put ADMIN_AUTH_SECRET
+npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 ```
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `EMPLOYEE_HMAC_SECRET` | secret | HMAC key for the de-identified participation ledger (required) |
+| `RESEND_API_KEY` | secret | Primary email provider for registration verification links |
+| `MAILJET_API_KEY` / `MAILJET_SECRET_KEY` | secret | Fallback email provider |
+| `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` (required for self-registration) |
+| `EMAIL_FROM_NAME` | var | Optional sender display name (defaults to `استبيان بيئة العمل`) |
+
+> **Employee self-registration** (`/?view=employee` → «إنشاء حساب موظف») only works once an
+> email provider and `EMAIL_FROM` are configured: registration emails a one-time link to the
+> corporate mailbox, and the account stays locked until that link is opened. Admin-created
+> accounts are trusted immediately and never need the link.
 
 ---
 
@@ -330,6 +347,20 @@ All API routes are relative: `GET /api/...` (the Caddy gateway proxies `:81` →
 | GET/POST | `/api/admin/users` | List / create admin users (SUPER_ADMIN only) |
 | GET/PATCH/DELETE | `/api/admin/users/:id` | Single user CRUD (SUPER_ADMIN only) |
 | GET | `/api/admin/audit` | Paginated audit log |
+
+### Auth + Accounts
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET/POST | `/api/auth/setup` | First-run admin claim (works only while no admin has a password) |
+| POST | `/api/auth/login` | Email + password (admin or employee) → httpOnly session cookie |
+| POST | `/api/auth/logout` | Destroy the current session |
+| GET | `/api/auth/me` | Current session (`authenticated`, admin/employee identity) |
+| POST | `/api/auth/register` | Employee self-registration (gated to `@almarshad.com`, sends verification link) |
+| GET | `/api/auth/verify?token=` | One-time verification link (HTML result page) |
+| POST | `/api/auth/resend-verification` | Re-issue the verification link |
+| GET/POST | `/api/admin/employees` | List / create employee accounts (mutations: SUPER_ADMIN) |
+| PATCH/DELETE | `/api/admin/employees/:id` | Reset password / deactivate (SUPER_ADMIN) |
 
 ### Employee
 

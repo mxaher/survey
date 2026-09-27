@@ -2,6 +2,7 @@ import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { isHmacSecretConfigured } from "@/lib/employee-hmac";
+import { isEmailConfigured } from "@/lib/email";
 import { MESSAGES } from "@/lib/messages";
 
 export const dynamic = "force-dynamic";
@@ -84,6 +85,9 @@ export const GET = apiHandler(async () => {
     // Whether the real `EMPLOYEE_HMAC_SECRET` worker secret is set (the
     // response only reports its presence, never the value).
     hmacSecretConfigured: isHmacSecretConfigured(),
+    // Whether an email provider + sender is configured — i.e. whether
+    // employee self-registration can actually deliver verification links.
+    emailConfigured: isEmailConfigured(),
     serverTime: new Date().toISOString(),
   });
 });

@@ -178,7 +178,7 @@ export function EmployeeApp() {
         {phase === "loading" ? (
           <IntroSkeleton />
         ) : phase === "unauthorized" ? (
-          <AuthCard />
+          <AuthCard canRegister />
         ) : phase === "no-campaign" ? (
           <NoActiveCampaignCard />
         ) : phase === "error" ? (

@@ -9,3 +9,12 @@ EMPLOYEE_HMAC_SECRET=
 # Admin session signing secret
 # In production, set via: wrangler secret put ADMIN_AUTH_SECRET
 ADMIN_AUTH_SECRET=
+
+# Email for employee self-registration (verification links)
+# Provider: set RESEND_API_KEY (primary) or MAILJET_API_KEY + MAILJET_SECRET_KEY
+RESEND_API_KEY=
+MAILJET_API_KEY=
+MAILJET_SECRET_KEY=
+# Verified sender address, e.g. survey@almarshad.com
+EMAIL_FROM=
+EMAIL_FROM_NAME=

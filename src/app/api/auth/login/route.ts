@@ -37,6 +37,7 @@ interface EmployeeRow {
   banned: number;
   passwordHash: string;
   salt: string;
+  emailVerified: number;
 }
 
 function clientIp(request: NextRequest): string {
@@ -109,6 +110,15 @@ export const POST = apiHandler(async (request: NextRequest) => {
       !(await verifyPassword(password, employee.passwordHash, employee.salt))
     ) {
       return fail(INVALID_CREDENTIALS, 401);
+    }
+    // Checked only after the password matched so this answer cannot be used
+    // to discover whether an address is registered.
+    if (!employee.emailVerified) {
+      return fail(
+        "لم يتم تأكيد بريدك الإلكتروني بعد. تفقّد صندوق الوارد أو أعد إرسال رابط التأكيد.",
+        403,
+        { needsVerification: true }
+      );
     }
     await createSession("employee", employee.id);
     return ok({

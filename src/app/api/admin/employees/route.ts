@@ -38,7 +38,7 @@ export const GET = apiHandler(async () => {
   const db = getDB();
   const employees = await db
     .prepare(
-      "SELECT id, email, displayName, department, isActive, banned, createdAt, updatedAt FROM EmployeeUser ORDER BY createdAt DESC"
+      "SELECT id, email, displayName, department, isActive, banned, emailVerified, createdAt, updatedAt FROM EmployeeUser ORDER BY createdAt DESC"
     )
     .all();
 
@@ -50,6 +50,7 @@ export const GET = apiHandler(async () => {
       department: e.department,
       isActive: e.isActive,
       banned: e.banned,
+      emailVerified: e.emailVerified,
       createdAt: e.createdAt,
       updatedAt: e.updatedAt,
     })),
@@ -96,7 +97,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
   const id = crypto.randomUUID();
   await db
     .prepare(
-      "INSERT INTO EmployeeUser (id, email, displayName, department, passwordHash, salt, isActive, banned, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))"
+      "INSERT INTO EmployeeUser (id, email, displayName, department, passwordHash, salt, isActive, banned, emailVerified, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, 1, 0, 1, datetime('now'), datetime('now'))"
     )
     .bind(id, email, input.displayName, input.department ?? null, hash, salt)
     .run();
@@ -117,6 +118,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
       department: input.department ?? null,
       isActive: 1,
       banned: 0,
+      emailVerified: 1,
     },
     { status: 201 }
   );
