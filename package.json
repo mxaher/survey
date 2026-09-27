@@ -5,12 +5,13 @@
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "npx next build",
+    "build:cf": "opennextjs-cloudflare build",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "db:local": "wrangler dev",
     "db:migrate": "wrangler d1 migrations apply almrshad-survey-db --local",
     "db:migrate:prod": "wrangler d1 migrations apply almrshad-survey-db",
-    "deploy": "npx opennextjs-cloudflare build && wrangler deploy"
+    "deploy": "opennextjs-cloudflare build && wrangler deploy"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
