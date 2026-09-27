@@ -590,7 +590,7 @@ export function DashboardView() {
       )}
 
       {/* Dev impersonation */}
-      {process.env.NODE_ENV !== "production" && <DevImpersonationPanel />}
+      <DevImpersonationPanel />
     </div>
   );
 }

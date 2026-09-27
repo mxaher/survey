@@ -50,9 +50,8 @@ const setSchema = z.object({
 export const POST = apiHandler(async (req: NextRequest) => {
   const admin = await getAdminUser();
   if (!admin) return fail("غير مصرّح", 401);
-  if (process.env.NODE_ENV === "production") {
-    return fail("غير متاح في بيئة الإنتاج", 403);
-  }
+  // Note: this deployment runs the dev-mode identity provider in every
+  // environment (there is no SSO), so the picker must work in production too.
 
   const body = await req.json().catch(() => null);
   const parsed = setSchema.safeParse(body);

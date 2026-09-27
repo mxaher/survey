@@ -13,7 +13,9 @@
  *      banner shows a subtle "dev mode as: <name>" chip so the user knows
  *      which identity is active.
  *
- * The banner is rendered in dev mode only (`NODE_ENV !== "production"`).
+ * The banner renders in every environment (see note in the component): the
+ * identity layer is dev-mode here, so gating it on NODE_ENV only hid the
+ * prompt and left visitors stuck on the skeleton.
  *
  * Privacy: the only identity info shown is the impersonated employee's
  * display name (never the HMAC, never the underlying `externalId` verbatim —
@@ -37,9 +39,9 @@ interface ImpersonationData {
 }
 
 export function ImpersonationBanner({ unauthorized }: { unauthorized: boolean }) {
-  // Only render in non-production. The server already gates the dev-impersonate
-  // route; this client check avoids layout shift in prod builds.
-  const isDev = process.env.NODE_ENV !== "production";
+  // Rendered in every environment: this deployment has no SSO, so the dev-mode
+  // picker is the only identity source. Without the banner an unauthenticated
+  // visitor would sit on the loading skeleton forever.
   const { data } = useQuery<ImpersonationData>({
     queryKey: ["dev-impersonate"],
     queryFn: async () => {
@@ -50,11 +52,8 @@ export function ImpersonationBanner({ unauthorized }: { unauthorized: boolean })
       const json = await res.json();
       return { current: json?.data?.current ?? null };
     },
-    enabled: isDev,
     staleTime: 30_000,
   });
-
-  if (!isDev) return null;
 
   // 401 + no impersonation → show the prompt to pick an employee identity.
   if (unauthorized && !data?.current) {

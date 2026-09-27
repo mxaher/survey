@@ -32,6 +32,20 @@ export default function RootLayout({
       <body
         className={`${tajawal.variable} antialiased bg-background text-foreground`}
       >
+        {/*
+          next-themes injects its theme script with `fn.toString()`. When a
+          bundler adds esbuild's `keepNames` helper (`__name`) to that function,
+          the stringified source calls `__name` outside the module scope and
+          throws "ReferenceError: __name is not defined", so the theme class is
+          never applied. Defining the esbuild-compatible helper first makes the
+          injected script safe in either case.
+        */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "self.__name=function(n,t){try{Object.defineProperty(n,\"name\",{value:t,configurable:true})}catch(e){}return n};",
+          }}
+        />
         <Providers>{children}</Providers>
         <Toaster />
       </body>
