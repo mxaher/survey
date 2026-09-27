@@ -18,7 +18,7 @@ export const metadata: Metadata = {
   keywords: ["استبيان", "بيئة العمل", "القيادة", "المرشد", "Almarshad"],
   authors: [{ name: "Almarshad Holding" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.svg",
   },
 };
 

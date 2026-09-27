@@ -284,7 +284,7 @@ At campaign activation (`POST /api/admin/campaigns/:id/activate`):
 
 ### Base URL
 
-All API routes are relative: `GET /api/...` (the Caddy gateway proxies `:81` → `:3000`).
+All API routes are relative: `GET /api/...`.
 
 ### Admin Auth
 
@@ -469,9 +469,8 @@ EmployeeApp (employee-app.tsx)
 ## File Map
 
 ```
-/home/z/my-project/
+survey/
 ├── .dev.vars.example               # Template for local dev secrets
-├── Caddyfile                       # Gateway config (:81 → :3000)
 ├── package.json                    # Scripts + deps
 ├── wrangler.toml                   # Cloudflare Workers + D1 config
 ├── open-next.config.ts             # OpenNext.js Cloudflare adapter
@@ -510,7 +509,6 @@ EmployeeApp (employee-app.tsx)
 │   ├── lib/                      # 12 lib helpers (see Lib Helpers above)
 │   └── hooks/                    # use-toast.ts, use-mobile.ts
 ├── worklog.md                    # Detailed development history (Tasks 1–14)
-├── download/                     # Screenshots + test exports
 └── dev.log                       # Next.js dev server log
 ```
 
@@ -583,16 +581,13 @@ Common keys:
 1. Read `worklog.md` to understand current state
 2. Run `bun run lint` — must be 0 errors
 3. Check dev server is running on port 3000
-4. Use `agent-browser` for QA walkthroughs
 
 ### After Changes
 
 1. Run `bun run lint`
 2. Run `bun test tests` (must be all green — migrations apply from scratch on every run)
 3. Smoke-test views: `curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000/?view=admin&tab=dashboard"`
-4. Use `agent-browser open` + `snapshot` to verify rendering
-5. Use VLM (`z-ai vision`) for visual design QA
-6. Append a new section to `worklog.md`
+4. Append a new section to `worklog.md`
 
 ### Worklog Format
 
@@ -643,20 +638,6 @@ In dev (NODE_ENV !== "production"):
 - The employee view then uses this cookie to identify the "current employee"
 - The HMAC is computed server-side from this cookie value
 - In production, this would be replaced by Cloudflare Access / Entra ID / SSO
-
----
-
-## Recurring Cron Job
-
-A `webDevReview` cron job (id 404970) fires every 15 minutes (`fixed_rate: 900`, tz `Asia/Riyadh`). It instructs the agent to:
-
-1. Review `worklog.md` for current state
-2. QA via `agent-browser`
-3. Fix bugs OR propose new features
-4. Mandatory: improve styling + add features
-5. Update `worklog.md`
-
-**To disable:** delete the cron job via the `cron` tool with `action: "delete", jobId: "404970"`.
 
 ---
 
