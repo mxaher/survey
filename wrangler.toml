@@ -1,7 +1,7 @@
 name = "almrshad-survey"
 main = ".open-next/worker.js"
 compatibility_date = "2024-09-23"
-compatibility_flags = ["nodejs_compat"]
+compatibility_flags = ["nodejs_compat", "nodejs_compat_populate_process_env"]
 account_id = "a76a117ad4225d384a4a2dc22ebece83"
 
 # D1 Database binding
