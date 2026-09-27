@@ -115,7 +115,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     // to discover whether an address is registered.
     if (!employee.emailVerified) {
       return fail(
-        "لم يتم تأكيد بريدك الإلكتروني بعد. تفقّد صندوق الوارد أو أعد إرسال رابط التأكيد.",
+        "لم يتم تأكيد بريدك الإلكتروني بعد. تواصل مع مدير النظام.",
         403,
         { needsVerification: true }
       );

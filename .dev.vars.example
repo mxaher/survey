@@ -2,6 +2,19 @@
 # Copy this file to .dev.vars and fill in the values
 # NEVER commit .dev.vars to version control
 
+# Cloudflare Access (background corporate identity verification)
+# The employee survey flow does NOT show a username/password form: eligibility
+# is verified from the Access JWT attached to the request by Cloudflare Access.
+#   CF_ACCESS_TEAM_DOMAIN — your Cloudflare Zero Trust team domain, e.g.
+#                           https://almarshad.cloudflareaccess.com
+#   CF_ACCESS_AUD         — the Application Audience tag of the Access app
+#                           protecting this survey.
+# Leave both empty for local development: `getVerifiedEmployee()` then falls
+# back to the session / dev-impersonation path.
+# In production, set via: wrangler secret put CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD
+CF_ACCESS_TEAM_DOMAIN=
+CF_ACCESS_AUD=
+
 # HMAC secret for employee identity hashing
 # In production, set via: wrangler secret put EMPLOYEE_HMAC_SECRET
 EMPLOYEE_HMAC_SECRET=

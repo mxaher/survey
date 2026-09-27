@@ -50,8 +50,10 @@ const setSchema = z.object({
 export const POST = apiHandler(async (req: NextRequest) => {
   const admin = await getAdminUser();
   if (!admin) return fail("غير مصرّح", 401);
-  // Note: this deployment runs the dev-mode identity provider in every
-  // environment (there is no SSO), so the picker must work in production too.
+  // Note: the Cloudflare Access provider only engages when
+  // CF_ACCESS_TEAM_DOMAIN + CF_ACCESS_AUD are configured. Where they are not
+  // (local dev, staging), this picker is the identity provider — so it has to
+  // keep working. Submit endpoints still refuse `source: "dev"` identities.
 
   const body = await req.json().catch(() => null);
   const parsed = setSchema.safeParse(body);

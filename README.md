@@ -99,10 +99,17 @@ bun run db:migrate:prod
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
 npx wrangler secret put ADMIN_AUTH_SECRET
 
-# 4. Email for employee self-registration (verification links)
+# 4. Background identity verification (employee survey sign-in)
+npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   # e.g. https://almarshad.cloudflareaccess.com
+npx wrangler secret put CF_ACCESS_AUD           # audience tag of the Access app
+# Then create a Cloudflare Access application for the Worker's route and add
+# the employees as a policy group. No sign-in page is rendered by the app —
+# Access authenticates at the edge and attaches `Cf-Access-JWT-Assertion`.
+
+# 5. Optional: transactional email
 npx wrangler secret put RESEND_API_KEY   # optional: Mailjet keys work too
 
-# 5. Build and deploy
+# 6. Build and deploy
 bun run deploy
 ```
 
@@ -136,16 +143,26 @@ npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 
 | Name | Kind | Purpose |
 |---|---|---|
+| `CF_ACCESS_TEAM_DOMAIN` | var/secret | Cloudflare Access team domain, e.g. `https://almarshad.cloudflareaccess.com` — background identity verification for the employee survey |
+| `CF_ACCESS_AUD` | var/secret | Audience tag of the Cloudflare Access application protecting this survey |
 | `EMPLOYEE_HMAC_SECRET` | secret | HMAC key for the de-identified participation ledger (required) |
-| `RESEND_API_KEY` | secret | Primary email provider for registration verification links |
+| `RESEND_API_KEY` | secret | Primary email provider (admin-triggered notifications) |
 | `MAILJET_API_KEY` / `MAILJET_SECRET_KEY` | secret | Fallback email provider |
-| `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` (required for self-registration) |
+| `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` |
 | `EMAIL_FROM_NAME` | var | Optional sender display name (defaults to `استبيان بيئة العمل`) |
 
-> **Employee self-registration** (`/?view=employee` → «إنشاء حساب موظف») only works once an
-> email provider and `EMAIL_FROM` are configured: registration emails a one-time link to the
-> corporate mailbox, and the account stays locked until that link is opened. Admin-created
-> accounts are trusted immediately and never need the link.
+> **Background identity verification.** The employee survey (`/?view=employee`) never renders a
+> username/password form. `getVerifiedEmployee()` (`src/lib/identity.ts`) resolves identity in
+> this order: the Cloudflare Access JWT on the request → an existing session → the dev
+> impersonation cookie (admins only, submit-blocked). Only the verified `sub` is used, in
+> memory, to key the participation HMAC — it is never stored alongside responses.
+>
+> The browser-facing copy never describes a person: an unverified request gets a neutral
+> «تعذّر التحقق من أهلية المشاركة» card with a retry action.
+>
+> **Employee self-registration was removed.** Employees are provisioned through the corporate
+> directory (or by an admin via `/api/admin/employees`), not by creating accounts in the app.
+> `POST /api/auth/register` and `POST /api/auth/resend-verification` no longer exist.
 
 ---
 
@@ -359,9 +376,7 @@ All API routes are relative: `GET /api/...`.
 | POST | `/api/auth/login` | Email + password (admin or employee) → httpOnly session cookie |
 | POST | `/api/auth/logout` | Destroy the current session |
 | GET | `/api/auth/me` | Current session (`authenticated`, admin/employee identity) |
-| POST | `/api/auth/register` | Employee self-registration (gated to `@almarshad.com`, sends verification link) |
-| GET | `/api/auth/verify?token=` | One-time verification link (HTML result page) |
-| POST | `/api/auth/resend-verification` | Re-issue the verification link |
+| GET | `/api/auth/verify?token=` | One-time verification link (HTML result page) — legacy tokens only, nothing issues new ones |
 | GET/POST | `/api/admin/employees` | List / create employee accounts (mutations: SUPER_ADMIN) |
 | PATCH/DELETE | `/api/admin/employees/:id` | Reset password / deactivate (SUPER_ADMIN) |
 
@@ -637,7 +652,10 @@ In dev (NODE_ENV !== "production"):
 - Selecting an employee + clicking "تطبيق" sets a cookie (`almrshd_dev_employee`)
 - The employee view then uses this cookie to identify the "current employee"
 - The HMAC is computed server-side from this cookie value
-- In production, this would be replaced by Cloudflare Access / Entra ID / SSO
+- **Blocked on every submit endpoint** (403): an admin must be able to preview the
+  survey, but must never be able to cast votes as an arbitrary employee
+- In production this path is unreachable — `getVerifiedEmployee()` resolves the
+  Cloudflare Access JWT first
 
 ---
 
@@ -645,7 +663,14 @@ In dev (NODE_ENV !== "production"):
 
 1. **Save/resume draft** — `GET/POST /api/employee/draft` returns 501. Persisting in-progress answers server-side would re-couple identity to answer content (architectural decision pending).
 
-2. **Real SSO/IdP** — The app uses dev-mode cookie impersonation (`src/lib/identity.ts`). In production, this should be replaced with Cloudflare Access / Microsoft Entra ID / SSO via the same `getVerifiedEmployee()` interface. The README must say "de-identified" not "100% anonymous" because the identity provider / infra logs may retain data outside the app's control.
+2. **Corporate identity behind Cloudflare Access** — `getVerifiedEmployee()`
+   (`src/lib/identity.ts`) accepts a Cloudflare Access JWT when `CF_ACCESS_TEAM_DOMAIN` and
+   `CF_ACCESS_AUD` are configured, and falls back to first-party session / dev impersonation
+   when they are not. Identity is resolved in the background: the survey UI never renders a
+   username/password form and never receives an employee identifier in a response body. The
+   README must say "de-identified" not "100% anonymous" because the identity provider / infra
+   logs may retain data outside the app's control. Enabling Access additionally requires a
+   custom domain on the Worker (`wrangler.toml` currently deploys to `*.workers.dev`).
 
 3. **Campaign comparison export with chart PNG embedded in XLSX** — Not yet implemented (requires server-side chart rendering — complex). The trend view has CSV/XLSX export of the raw data, but not the chart image itself.
 

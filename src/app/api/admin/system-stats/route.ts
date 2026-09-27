@@ -85,8 +85,8 @@ export const GET = apiHandler(async () => {
     // Whether the real `EMPLOYEE_HMAC_SECRET` worker secret is set (the
     // response only reports its presence, never the value).
     hmacSecretConfigured: isHmacSecretConfigured(),
-    // Whether an email provider + sender is configured — i.e. whether
-    // employee self-registration can actually deliver verification links.
+    // Whether an email provider + sender is configured (admin-triggered
+    // transactional mail).
     emailConfigured: isEmailConfigured(),
     serverTime: new Date().toISOString(),
   });

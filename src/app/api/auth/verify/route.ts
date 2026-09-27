@@ -7,7 +7,10 @@ export const dynamic = "force-dynamic";
 const LOGIN_URL = "/?view=employee";
 
 /**
- * GET /api/auth/verify?token=… — the link emailed at self-registration.
+ * GET /api/auth/verify?token=… — legacy one-time verification link.
+ *
+ * Nothing issues these tokens any more (employee self-registration was
+ * removed); the route stays so outstanding links do not dead-end.
  *
  * Renders a small self-contained HTML page for every outcome (the recipient
  * is an employee following an email, not an API client). Success flips

@@ -3,10 +3,11 @@
 /**
  * Admin preview (impersonation) chip.
  *
- * Employees normally sign in with their own account (`AuthCard`), so this
- * banner only renders while an admin is previewing the survey through the
- * Employee Picker: a small "previewing as: …" chip above the survey so the
- * admin always knows which identity is active.
+ * Identity is resolved in the background (Cloudflare Access → session), so
+ * nobody signs in through this banner. It only renders while an admin is
+ * previewing the survey through the Employee Picker: a small "previewing
+ * as: …" chip above the survey so the admin always knows which identity is
+ * active.
  */
 import { useQuery } from "@tanstack/react-query";
 import { UserCircle2 } from "lucide-react";
@@ -38,8 +39,8 @@ export function ImpersonationBanner({ unauthorized }: { unauthorized: boolean })
     staleTime: 30_000,
   });
 
-  // 401 → the sign-in card (AuthCard) owns that state; the banner stays out
-  // of the way so visitors get one clear action instead of two.
+  // 401 → the "could not verify eligibility" card owns that state; the
+  // banner stays out of the way so visitors get one clear action.
   if (unauthorized) return null;
 
   // Admin preview (impersonation) active → subtle chip so the admin knows

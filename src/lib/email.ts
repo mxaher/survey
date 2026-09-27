@@ -1,7 +1,10 @@
 import { readWorkerEnv } from "@/lib/env";
 
 /**
- * Transactional email for employee self-registration (verification link).
+ * Transactional email.
+ *
+ * Self-registration was removed, so nothing in the app currently triggers
+ * mail; the transport is kept for admin-triggered notices.
  *
  * Providers, ported from fifa2026-vercel `src/lib/email.ts`:
  *   1. Resend  — `RESEND_API_KEY`

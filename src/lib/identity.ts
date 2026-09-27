@@ -1,22 +1,32 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { getDB } from "@/lib/db";
 import { computeEmployeeHmac, normalizeEmployeeId } from "@/lib/employee-hmac";
 import { getSession } from "@/lib/session";
 import { getAdminUser } from "@/lib/admin-auth";
+import {
+  ACCESS_JWT_HEADER,
+  subjectFromAccessHeader,
+  type ParticipantSource,
+} from "@/lib/identity-provider";
 
 /**
  * Employee identity provider (spec §6).
  *
- * Primary source of truth: an authenticated **employee session** created by
- * `POST /api/auth/login` (email + password, PBKDF2). The server looks the
- * account up, and the identifier it derives the HMAC from is the account's
- * email — never stored alongside responses, only as an HMAC in
- * `participation_ledger` (spec §5.2).
+ * Resolved **server-side only**, in this order:
  *
- * Secondary source: the dev impersonation cookie written by the admin
- * Employee Picker. It is only honored for an **authenticated admin**, so it
- * works as an admin preview tool instead of a way for anyone to assume an
- * arbitrary identity.
+ *   1. Cloudflare Access JWT (`Cf-Access-JWT-Assertion`) — the production
+ *      path. The visitor is authenticated by the corporate identity layer
+ *      before the request ever reaches the app, so no username/password
+ *      screen is rendered. Only the verified `sub` is used, and only in
+ *      memory, to key the participation HMAC.
+ *   2. An authenticated **employee session** created by `POST /api/auth/login`
+ *      (email + password). The identifier hashed is the account email — never
+ *      stored alongside responses, only as an HMAC in `ParticipationLedger`.
+ *      No UI in the survey flow renders this form; it remains for local work
+ *      and for sessions already established through the admin shell.
+ *   3. The dev impersonation cookie written by the admin Employee Picker. Only
+ *      honored for an authenticated admin, and refused by every submit
+ *      endpoint — it is a preview tool, never a way to write participation.
  */
 export interface VerifiedEmployee {
   externalId: string;
@@ -26,15 +36,16 @@ export interface VerifiedEmployee {
   displayName?: string;
   /**
    * Where this identity came from.
-   *   "session" — an authenticated employee session (email + password).
-   *   "dev"     — the admin Employee Picker impersonation cookie.
+   *   "cloudflare-access" — verified by the corporate identity layer.
+   *   "session"           — an authenticated employee session.
+   *   "dev"               — the admin Employee Picker impersonation cookie.
    *
    * `"dev"` identities may render the employee experience for preview, but
    * they are refused on every submit endpoint: otherwise an admin could pick
    * an arbitrary address and cast fabricated votes (the participation HMAC is
-   * derived per address, so each pick would be a fresh, "valid" participant).
+   * derived per subject, so each pick would be a fresh, "valid" participant).
    */
-  source?: "session" | "dev";
+  source?: ParticipantSource;
 }
 
 const DEV_EMPLOYEE_COOKIE = "almrshd_dev_employee";
@@ -51,6 +62,22 @@ interface EmployeeUserRow {
 
 /** Get the current employee identity. Returns null when nobody is signed in. */
 export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
+  // 1. Background corporate identity — resolved from the Access JWT the edge
+  //    attached. No user interaction, nothing sent back to the browser, and
+  //    the subject is used only to key the participation HMAC.
+  const reqHeaders = await headers();
+  const accessSubject = await subjectFromAccessHeader(
+    reqHeaders.get(ACCESS_JWT_HEADER)
+  );
+  if (accessSubject) {
+    return {
+      externalId: accessSubject,
+      isActive: true,
+      source: "cloudflare-access",
+    };
+  }
+
+  // 2. Existing first-party session.
   const session = await getSession();
 
   if (session?.employeeUserId) {
@@ -70,7 +97,7 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
     };
   }
 
-  // Dev impersonation preview — admins only.
+  // 3. Dev impersonation preview — admins only, and write-blocked on submit.
   const admin = await getAdminUser();
   if (!admin) return null;
   return readDevEmployeeCookie();
