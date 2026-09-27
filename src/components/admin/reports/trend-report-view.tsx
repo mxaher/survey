@@ -415,9 +415,9 @@ export function TrendReportView() {
                           </span>
                           <div className="relative h-1.5 w-16 rounded-full bg-muted overflow-hidden">
                             <div
-                              className="absolute inset-y-0 right-0 rounded-full bg-primary/70"
+                              className="absolute inset-y-0 end-0 rounded-full bg-primary/70"
                               style={{
-                                width: `${Math.min(100, c.participationRate)}%`,
+                                inlineSize: `${Math.min(100, c.participationRate)}%`,
                               }}
                             />
                           </div>
@@ -475,7 +475,7 @@ export function TrendReportView() {
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                   data={dimensions}
-                  margin={{ top: 16, right: 24, bottom: 60, left: 8 }}
+                  margin={{ top: 16, insetInlineEnd: 24, bottom: 60, insetInlineStart: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis
@@ -568,7 +568,7 @@ export function TrendReportView() {
                         : 0,
                     evaluators: c.distinctEvaluators,
                   }))}
-                  margin={{ top: 16, right: 24, bottom: 60, left: 8 }}
+                  margin={{ top: 16, insetInlineEnd: 24, bottom: 60, insetInlineStart: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis

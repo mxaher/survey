@@ -948,7 +948,7 @@ function ActivateButton({ campaignId }: { campaignId: string }) {
               إعادة المحاولة:
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <ul className="max-h-72 overflow-y-auto space-y-2 scroll-rtl pr-1">
+          <ul className="max-h-72 overflow-y-auto space-y-2 scroll-rtl pe-1">
             {issues?.map((iss) => (
               <li
                 key={iss.key}

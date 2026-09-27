@@ -148,7 +148,7 @@ export function QuestionsListView() {
         description="مكتبة الأسئلة المتاحة للحملات. يمكن إعادة استخدام السؤال في عدة حملات."
         actions={
           <Button onClick={() => router.push("/?view=admin&tab=questions&sub=editor&id=new")}>
-            <Plus className="ml-2 h-4 w-4" />
+            <Plus className="ms-2 h-4 w-4" />
             سؤال جديد
           </Button>
         }
@@ -197,12 +197,12 @@ export function QuestionsListView() {
           <div className="flex flex-1 flex-col gap-2">
             <label className="text-xs font-medium text-muted-foreground">بحث نصي</label>
             <div className="relative">
-              <Search className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute end-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="ابحث برمز السؤال أو نصه"
-                className="pr-8"
+                className="pe-8"
                 aria-label="بحث نصي"
               />
             </div>
@@ -229,7 +229,7 @@ export function QuestionsListView() {
               <button
                 type="button"
                 onClick={() => setIsActiveFilter(isActiveFilter === "active" ? "inactive" : "active")}
-                className="ml-1 text-xs text-primary underline-offset-2 hover:underline"
+                className="ms-1 text-xs text-primary underline-offset-2 hover:underline"
               >
                 {isActiveFilter === "active" ? "عرض المعطّلة" : "عرض النشطة"}
               </button>
@@ -264,7 +264,7 @@ export function QuestionsListView() {
           }
           action={
             <Button onClick={() => router.push("/?view=admin&tab=questions&sub=editor&id=new")}>
-              <Plus className="ml-2 h-4 w-4" />
+              <Plus className="ms-2 h-4 w-4" />
               سؤال جديد
             </Button>
           }
@@ -283,7 +283,7 @@ export function QuestionsListView() {
                 <TableHead>الحالة</TableHead>
                 <TableHead>آخر تعديل</TableHead>
                 <TableHead>الترتيب</TableHead>
-                <TableHead className="text-left">إجراءات</TableHead>
+                <TableHead className="text-start">إجراءات</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -344,7 +344,7 @@ export function QuestionsListView() {
                               router.push(`/?view=admin&tab=questions&sub=editor&id=${q.id}`)
                             }
                           >
-                            <Pencil className="ml-2 h-4 w-4" />
+                            <Pencil className="ms-2 h-4 w-4" />
                             تعديل
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -355,7 +355,7 @@ export function QuestionsListView() {
                             >
                               <ActionButton
                                 label="تعطيل"
-                                icon={<Power className="ml-2 h-4 w-4" />}
+                                icon={<Power className="ms-2 h-4 w-4" />}
                                 variant="ghost"
                                 size="sm"
                                 className="w-full justify-start"
@@ -374,7 +374,7 @@ export function QuestionsListView() {
                             >
                               <ActionButton
                                 label="تفعيل"
-                                icon={<Power className="ml-2 h-4 w-4" />}
+                                icon={<Power className="ms-2 h-4 w-4" />}
                                 variant="ghost"
                                 size="sm"
                                 className="w-full justify-start"
@@ -394,7 +394,7 @@ export function QuestionsListView() {
                           >
                             <ActionButton
                               label="حذف"
-                              icon={<Trash2 className="ml-2 h-4 w-4" />}
+                              icon={<Trash2 className="ms-2 h-4 w-4" />}
                               variant="ghost"
                               size="sm"
                               className="w-full justify-start text-destructive hover:text-destructive"

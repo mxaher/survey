@@ -1,12 +1,17 @@
 import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 import nextTypescript from "eslint-config-next/typescript";
+import tailwindRtl from "eslint-plugin-tailwind-rtl";
 import { dirname } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
+const eslintConfig = [
+  ...nextCoreWebVitals,
+  ...nextTypescript,
+  tailwindRtl.configs.recommended,
+  {
   rules: {
     // TypeScript rules
     "@typescript-eslint/no-explicit-any": "off",
@@ -42,6 +47,10 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-undef": "off",
     "no-unreachable": "off",
     "no-useless-escape": "off",
+
+    // Tailwind RTL rules
+    "tailwind-rtl/tailwind/no-physical-classes": "error",
+    "tailwind-rtl/css-in-js/no-physical-properties": "error",
   },
 }, {
   ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]

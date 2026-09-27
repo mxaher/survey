@@ -585,7 +585,7 @@ function QuestionCard({
                 <BarChart
                   data={chartData}
                   layout="vertical"
-                  margin={{ top: 8, right: 24, bottom: 8, left: 8 }}
+                  margin={{ top: 8, insetInlineEnd: 24, bottom: 8, insetInlineStart: 8 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis

@@ -82,7 +82,7 @@ export function ActionButton({
       onClick={() => mutation.mutate()}
       className={className}
     >
-      {mutation.isPending && <Loader2 className="ml-2 h-4 w-4 animate-spin" />}
+      {mutation.isPending && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}
       {!mutation.isPending && icon}
       {mutation.isPending ? (loadingLabel ?? label) : label}
     </Button>

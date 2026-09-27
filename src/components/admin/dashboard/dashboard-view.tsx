@@ -285,8 +285,8 @@ export function DashboardView() {
                     <StatusBadge status={meta.key} />
                     <div className="relative flex-1 h-2 rounded-full bg-muted overflow-hidden">
                       <div
-                        className="absolute inset-y-0 right-0 bg-primary/70"
-                        style={{ width: `${pct}%` }}
+                        className="absolute inset-y-0 end-0 bg-primary/70"
+                        style={{ inlineSize: `${pct}%` }}
                       />
                     </div>
                     <span className="min-w-8 text-sm font-semibold tabular-nums text-foreground">
@@ -830,7 +830,7 @@ function DimensionBar({
         <div className="relative mt-1 h-1.5 rounded-full bg-muted overflow-hidden">
           <div
             className={`absolute inset-y-0 right-0 rounded-full bg-gradient-to-l ${toneCls} transition-all duration-500`}
-            style={{ width: `${pct}%` }}
+            style={{ inlineSize: `${pct}%` }}
           />
         </div>
       </div>

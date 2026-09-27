@@ -724,8 +724,8 @@ function QuestionsTab({
               disabled={selectedIds.size === 0 || !editable || assignMutation.isPending}
               size="sm"
             >
-              {assignMutation.isPending && <Loader2 className="ml-2 h-4 w-4 animate-spin" />}
-              <Plus className="ml-2 h-4 w-4" />
+              {assignMutation.isPending && <Loader2 className="ms-2 h-4 w-4 animate-spin" />}
+              <Plus className="ms-2 h-4 w-4" />
               إضافة إلى الحملة {selectedIds.size > 0 && `(${selectedIds.size})`}
             </Button>
           </CardContent>
@@ -840,7 +840,7 @@ function SortableAssignedQuestion({
             </div>
             <ActionButton
               label="إزالة"
-              icon={<Trash2 className="ml-2 h-4 w-4" />}
+              icon={<Trash2 className="ms-2 h-4 w-4" />}
               variant="ghost"
               size="sm"
               disabled={!editable}
@@ -1104,7 +1104,7 @@ function ExecutivesTab({
                         ) : (
                           <ActionButton
                             label="إضافة"
-                            icon={<UserPlus className="ml-2 h-4 w-4" />}
+                            icon={<UserPlus className="ms-2 h-4 w-4" />}
                             disabled={!editable || !e.isActive}
                             variant="outline"
                             size="sm"
@@ -1241,7 +1241,7 @@ function SortableAssignedExecutive({
             </div>
             <ActionButton
               label="إزالة من الحملة"
-              icon={<Trash2 className="ml-2 h-4 w-4" />}
+              icon={<Trash2 className="ms-2 h-4 w-4" />}
               variant="ghost"
               size="sm"
               disabled={!editable}
@@ -1583,7 +1583,7 @@ function ReadinessTab({
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button disabled={!r.ready}>
-              <Rocket className="ml-2 h-4 w-4" />
+              <Rocket className="ms-2 h-4 w-4" />
               فتح الحملة
             </Button>
           </AlertDialogTrigger>
@@ -1637,7 +1637,7 @@ function ResultsTab({
               وتقييم المسؤولين، مع إخفاء النتائج التي لا تتجاوز عتبة الإخفاء.
             </p>
             <Button onClick={() => router.push(`/?view=admin&tab=reports&sub=campaign&id=${campaignId}`)}>
-              <BarChart3 className="ml-2 h-4 w-4" />
+              <BarChart3 className="ms-2 h-4 w-4" />
               عرض التقرير الكامل
             </Button>
           </CardContent>

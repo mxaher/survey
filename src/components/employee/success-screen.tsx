@@ -43,7 +43,7 @@ export function SuccessScreen({
           <p className="text-sm sm:text-base leading-relaxed text-foreground/90">
             {MESSAGES.submissionSuccess}
           </p>
-          <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/15 p-3 flex items-start gap-2 text-right">
+          <div className="rounded-md border border-amber-300/60 bg-amber-50/60 dark:bg-amber-950/15 p-3 flex items-start gap-2 text-end">
             <ShieldCheck className="h-4 w-4 mt-0.5 shrink-0 text-amber-700 dark:text-amber-300" />
             <p className="text-xs leading-relaxed text-amber-900 dark:text-amber-200">
               {PRIVACY_NOTICE}

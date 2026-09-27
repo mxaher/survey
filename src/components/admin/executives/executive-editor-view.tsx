@@ -194,7 +194,7 @@ function ExecutiveForm({
         description="المسؤولون هم الموظفون القياديون القابلون للتقييم في الحملات."
         actions={
           <Button variant="outline" onClick={() => router.push("/?view=admin&tab=executives")}>
-            <ArrowRight className="ml-2 h-4 w-4" />
+            <ArrowRight className="ms-2 h-4 w-4" />
             عودة للقائمة
           </Button>
         }
@@ -304,9 +304,9 @@ function ExecutiveForm({
                 disabled={saveMutation.isPending}
               >
                 {saveMutation.isPending ? (
-                  <Loader2 className="ml-2 h-4 w-4 animate-spin" />
+                  <Loader2 className="ms-2 h-4 w-4 animate-spin" />
                 ) : (
-                  <Save className="ml-2 h-4 w-4" />
+                  <Save className="ms-2 h-4 w-4" />
                 )}
                 {isNew ? "إنشاء المسؤول" : "حفظ التعديلات"}
               </Button>

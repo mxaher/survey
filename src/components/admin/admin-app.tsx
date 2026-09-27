@@ -285,7 +285,7 @@ export function AdminApp() {
               <Menu className="h-5 w-5" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="right" className="w-72 p-0">
+          <SheetContent side="end" className="w-72 p-0">
             <div className="flex h-14 items-center gap-2 border-b border-border px-4">
               <div className="h-8 w-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold text-sm">
                 الم
@@ -380,7 +380,7 @@ export function AdminApp() {
                   router.push("/?view=admin&tab=settings")
                 }
               >
-                <Settings className="h-4 w-4 ml-2" />
+                <Settings className="h-4 w-4 ms-2" />
                 إعدادات النظام
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -391,7 +391,7 @@ export function AdminApp() {
                   window.location.href = "/?view=employee";
                 }}
               >
-                <LogOut className="h-4 w-4 ml-2" />
+                <LogOut className="h-4 w-4 ms-2" />
                 تسجيل الخروج
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -405,7 +405,7 @@ export function AdminApp() {
     <div className="min-h-screen flex flex-col bg-background">
       {header}
       <div className="flex flex-1 mx-auto w-full max-w-7xl">
-        <aside className="hidden md:block w-60 shrink-0 border-l border-border bg-sidebar">
+        <aside className="hidden md:block w-60 shrink-0 border-s border-border bg-sidebar">
           <div className="sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto scroll-rtl">
             {navList}
           </div>

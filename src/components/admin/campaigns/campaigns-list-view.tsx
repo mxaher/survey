@@ -665,7 +665,7 @@ function ReadinessIssuesDialog({
               : ""}
           </DialogDescription>
         </DialogHeader>
-        <ul className="max-h-80 overflow-y-auto space-y-2 scroll-rtl pr-1">
+        <ul className="max-h-80 overflow-y-auto space-y-2 scroll-rtl pe-1">
           {state?.issues.map((iss) => (
             <li
               key={iss.key}

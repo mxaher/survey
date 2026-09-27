@@ -128,7 +128,7 @@ export function ExecutivesListView() {
         description="سجل الموظفين القياديين المتاحين للتقييم في الحملات. يمكن إعادة استخدام المسؤول في عدة حملات."
         actions={
           <Button onClick={() => router.push("/?view=admin&tab=executives&sub=editor&id=new")}>
-            <Plus className="ml-2 h-4 w-4" />
+            <Plus className="ms-2 h-4 w-4" />
             إضافة مسؤول
           </Button>
         }
@@ -176,12 +176,12 @@ export function ExecutivesListView() {
           <div className="flex flex-1 flex-col gap-2">
             <label className="text-xs font-medium text-muted-foreground">بحث نصي</label>
             <div className="relative">
-              <Search className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Search className="pointer-events-none absolute end-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="ابحث بالاسم أو المسمى أو الإدارة"
-                className="pr-8"
+                className="pe-8"
                 aria-label="بحث نصي"
               />
             </div>
@@ -207,7 +207,7 @@ export function ExecutivesListView() {
               <button
                 type="button"
                 onClick={() => setIsActiveFilter(isActiveFilter === "active" ? "inactive" : "active")}
-                className="ml-1 text-xs text-primary underline-offset-2 hover:underline"
+                className="ms-1 text-xs text-primary underline-offset-2 hover:underline"
               >
                 {isActiveFilter === "active" ? "عرض المعطّلة" : "عرض النشطة"}
               </button>
@@ -242,7 +242,7 @@ export function ExecutivesListView() {
           }
           action={
             <Button onClick={() => router.push("/?view=admin&tab=executives&sub=editor&id=new")}>
-              <Plus className="ml-2 h-4 w-4" />
+              <Plus className="ms-2 h-4 w-4" />
               إضافة مسؤول
             </Button>
           }
@@ -259,7 +259,7 @@ export function ExecutivesListView() {
                 <TableHead>الحالة</TableHead>
                 <TableHead>عدد الحملات</TableHead>
                 <TableHead>الترتيب</TableHead>
-                <TableHead className="text-left">إجراءات</TableHead>
+                <TableHead className="text-start">إجراءات</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -308,7 +308,7 @@ export function ExecutivesListView() {
                               router.push(`/?view=admin&tab=executives&sub=editor&id=${e.id}`)
                             }
                           >
-                            <Pencil className="ml-2 h-4 w-4" />
+                            <Pencil className="ms-2 h-4 w-4" />
                             تعديل
                           </DropdownMenuItem>
                           <DropdownMenuSeparator />
@@ -319,7 +319,7 @@ export function ExecutivesListView() {
                             >
                               <ActionButton
                                 label="تعطيل"
-                                icon={<Power className="ml-2 h-4 w-4" />}
+                                icon={<Power className="ms-2 h-4 w-4" />}
                                 variant="ghost"
                                 size="sm"
                                 className="w-full justify-start"
@@ -338,7 +338,7 @@ export function ExecutivesListView() {
                             >
                               <ActionButton
                                 label="تفعيل"
-                                icon={<Power className="ml-2 h-4 w-4" />}
+                                icon={<Power className="ms-2 h-4 w-4" />}
                                 variant="ghost"
                                 size="sm"
                                 className="w-full justify-start"
@@ -358,7 +358,7 @@ export function ExecutivesListView() {
                           >
                             <ActionButton
                               label="حذف"
-                              icon={<Trash2 className="ml-2 h-4 w-4" />}
+                              icon={<Trash2 className="ms-2 h-4 w-4" />}
                               variant="ghost"
                               size="sm"
                               className="w-full justify-start text-destructive hover:text-destructive"
