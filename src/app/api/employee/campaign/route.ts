@@ -47,7 +47,7 @@ export const GET = apiHandler(async (_request: NextRequest) => {
     for (const s of snaps) {
       const { results: opts } = await db
         .prepare(
-          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+          "SELECT * FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId = ? ORDER BY displayOrder ASC"
         )
         .bind(s.id)
         .all();
@@ -66,7 +66,7 @@ export const GET = apiHandler(async (_request: NextRequest) => {
     for (const s of snaps) {
       const { results: opts } = await db
         .prepare(
-          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+          "SELECT * FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId = ? ORDER BY displayOrder ASC"
         )
         .bind(s.id)
         .all();

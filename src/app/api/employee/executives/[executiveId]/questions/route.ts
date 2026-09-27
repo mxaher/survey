@@ -74,7 +74,7 @@ export const GET = apiHandler(
     for (const s of snapshots) {
       const { results: options } = await db
         .prepare(
-          "SELECT * FROM CampaignQuestionOption WHERE snapshotId = ? ORDER BY displayOrder ASC"
+          "SELECT * FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId = ? ORDER BY displayOrder ASC"
         )
         .bind(s.id)
         .all();

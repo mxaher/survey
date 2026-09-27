@@ -28,7 +28,7 @@
  */
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ClipboardList, LogIn } from "lucide-react";
+import { AlertTriangle, ClipboardList, LogIn, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -41,7 +41,7 @@ import { useWizardStore } from "./wizard-store";
 import { fetchEmployeeApi, ApiError } from "./api";
 import type { ActiveCampaign } from "./types";
 
-type Phase = "loading" | "no-campaign" | "intro" | "wizard" | "success";
+type Phase = "loading" | "error" | "no-campaign" | "intro" | "wizard" | "success";
 
 interface PsShape {
   environmentSubmitted: boolean;
@@ -123,6 +123,10 @@ export function EmployeeApp() {
   } else if (unauthorized) {
     // No campaign loaded yet (and 401) → show impersonation prompt.
     phase = "loading";
+  } else if (campaignQuery.isError) {
+    // Non-401 failure (server error, network error) — never fall through to
+    // the intro card with an undefined campaign.
+    phase = "error";
   } else if (campaignQuery.data === null) {
     phase = "no-campaign";
   } else if (finished) {
@@ -167,6 +171,17 @@ export function EmployeeApp() {
           <IntroSkeleton />
         ) : phase === "no-campaign" ? (
           <NoActiveCampaignCard />
+        ) : phase === "error" ? (
+          <LoadErrorCard
+            message={
+              campaignQuery.error instanceof ApiError
+                ? campaignQuery.error.message
+                : "تعذّر تحميل الاستبيان. يرجى المحاولة مرة أخرى."
+            }
+            onRetry={() => {
+              campaignQuery.refetch();
+            }}
+          />
         ) : phase === "success" ? (
           <SuccessScreen
             campaignTitle={campaignQuery.data?.titleAr ?? ""}
@@ -248,6 +263,44 @@ function NoActiveCampaignCard() {
               <LogIn className="h-4 w-4" />
               دخول الإدارة
             </a>
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function LoadErrorCard({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-3xl">
+      <Card>
+        <CardContent className="py-12 text-center space-y-4">
+          <div className="mx-auto h-16 w-16 rounded-full bg-destructive/10 grid place-items-center">
+            <AlertTriangle className="h-8 w-8 text-destructive" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold">
+              تعذّر تحميل بيانات الاستبيان
+            </h2>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              {message}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="default"
+            className="gap-2 min-h-[44px]"
+            onClick={onRetry}
+          >
+            <RefreshCw className="h-4 w-4" />
+            إعادة المحاولة
           </Button>
         </CardContent>
       </Card>
