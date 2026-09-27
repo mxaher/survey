@@ -9,11 +9,13 @@ import {
   QUESTION_TYPES,
   QUESTION_SECTIONS,
 } from "@/lib/constants";
+import { optionSentiment } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
 
 const QUESTION_TYPE_KEYS = QUESTION_TYPES.map((t) => t.key);
 const QUESTION_SECTION_KEYS = QUESTION_SECTIONS.map((s) => s.key);
+const flag = (v: boolean): number => (v ? 1 : 0);
 
 /**
  * Helper — returns true iff the question with `id` is referenced by at
@@ -105,6 +107,10 @@ export const GET = apiHandler(
       questionType: q.questionType,
       section: q.section,
       dimension: q.dimension,
+      categoryCode: q.categoryCode,
+      categoryAr: q.categoryAr,
+      scaleCode: q.scaleCode,
+      scope: q.scope,
       isRequired: q.isRequired,
       displayOrder: q.displayOrder,
       maxSelections: q.maxSelections,
@@ -165,6 +171,10 @@ const patchSchema = z.object({
     })
     .optional(),
   dimension: z.string().trim().optional().nullable(),
+  categoryCode: z.string().trim().optional().nullable(),
+  categoryAr: z.string().trim().optional().nullable(),
+  scaleCode: z.string().trim().optional().nullable(),
+  scope: z.string().trim().optional().nullable(),
   isRequired: z.coerce.boolean().optional(),
   displayOrder: z.coerce.number().int().min(0).optional(),
   maxSelections: z.coerce.number().int().min(1).optional().nullable(),
@@ -282,6 +292,10 @@ export const PATCH = apiHandler(
       "questionType",
       "section",
       "dimension",
+      "categoryCode",
+      "categoryAr",
+      "scaleCode",
+      "scope",
       "isRequired",
       "displayOrder",
       "maxSelections",
@@ -341,8 +355,9 @@ export const PATCH = apiHandler(
             batchStatements.push(
               db
                 .prepare(
-                  `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)`
+                  `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder,
+                   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
                 )
                 .bind(
                   crypto.randomUUID(),
@@ -351,6 +366,9 @@ export const PATCH = apiHandler(
                   inc.labelAr,
                   inc.score ?? null,
                   inc.displayOrder,
+                  flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isFavorable),
+                  flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isUnfavorable),
+                  flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isExcludedFromCalculation),
                   inc.isActive !== undefined ? (inc.isActive ? 1 : 0) : 1
                 )
             );
@@ -392,6 +410,21 @@ export const PATCH = apiHandler(
           }
 
           if (optSetClauses.length > 0) {
+            const sentiment = optionSentiment(
+              inc.value,
+              inc.score ?? null,
+              existing.questionType as string
+            );
+            optSetClauses.push(
+              "isFavorable = ?",
+              "isUnfavorable = ?",
+              "isExcludedFromCalculation = ?"
+            );
+            optParams.push(
+              sentiment.isFavorable ? 1 : 0,
+              sentiment.isUnfavorable ? 1 : 0,
+              sentiment.isExcludedFromCalculation ? 1 : 0
+            );
             optParams.push(inc.id);
             batchStatements.push(
               db
@@ -406,8 +439,9 @@ export const PATCH = apiHandler(
           batchStatements.push(
             db
               .prepare(
-                `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+                `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder,
+                 isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
               )
               .bind(
                 crypto.randomUUID(),
@@ -416,6 +450,9 @@ export const PATCH = apiHandler(
                 inc.labelAr,
                 inc.score ?? null,
                 inc.displayOrder,
+                flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isFavorable),
+                flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isUnfavorable),
+                flag(optionSentiment(inc.value, inc.score ?? null, existing.questionType as string).isExcludedFromCalculation),
                 inc.isActive !== undefined ? (inc.isActive ? 1 : 0) : 1
               )
           );
@@ -485,6 +522,10 @@ export const PATCH = apiHandler(
       questionType: updated.questionType,
       section: updated.section,
       dimension: updated.dimension,
+      categoryCode: updated.categoryCode,
+      categoryAr: updated.categoryAr,
+      scaleCode: updated.scaleCode,
+      scope: updated.scope,
       isRequired: updated.isRequired,
       displayOrder: updated.displayOrder,
       maxSelections: updated.maxSelections,

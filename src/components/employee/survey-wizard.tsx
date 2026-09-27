@@ -67,9 +67,9 @@ import type {
 } from "./types";
 
 const STEPS = [
-  { key: "environment", labelAr: "بيئة العمل" },
-  { key: "leadership", labelAr: "تقييم القيادات" },
-  { key: "future", labelAr: "البيئة المستقبلية" },
+  { key: "environment", labelAr: "بيئة العمل العامة" },
+  { key: "leadership", labelAr: "تقييم المسؤول" },
+  { key: "future", labelAr: "أولويات التحسين المستقبلية" },
   { key: "review", labelAr: "المراجعة والإرسال" },
 ] as const;
 
@@ -844,8 +844,8 @@ function StepEnvironment({
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <SectionHeader
-        title="بيئة العمل"
-        description="رجاءً اختر أكثر خيار يعكس تجربتك في بيئة العمل الحالية."
+        title="بيئة العمل العامة"
+        description="يرجى تقييم بيئة العمل في المؤسسة بشكل عام بناءً على تجربتك المهنية."
         required={missingRequired}
       />
       {campaign.environmentQuestions.length === 0 ? (
@@ -942,8 +942,8 @@ function StepExecutive({
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <SectionHeader
-        title="تقييم القيادات"
-        description="اختر مسؤولاً من القائمة ثم قيّمه على كل بُعد من أبعاد القيادة."
+        title="تقييم المسؤول"
+        description="يرجى تقييم سلوك المسؤول الذي تختاره بناءً على تجربتك المهنية المباشرة معه."
         required={missingRequired}
       />
 
@@ -1095,8 +1095,8 @@ function StepFuture({
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <SectionHeader
-        title="البيئة المستقبلية"
-        description="رجاءً حدد الجوانب التي تطمح لرؤيتها في بيئة العمل المستقبلية."
+        title="أولويات التحسين المستقبلية"
+        description="يرجى تحديد الجوانب التي ترغب في تحسينها خلال الفترة القادمة."
         required={missingRequired}
       />
       {campaign.futureQuestions.length === 0 ? (

@@ -6,6 +6,7 @@ import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
 import { isWithinActiveWindow, nowUtc } from "@/lib/time";
 import { newResponseGroupId } from "@/lib/employee-hmac";
+import { validateSelections } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
 
@@ -92,7 +93,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
   const snapshotMap = new Map<string, { id: string; isRequired: number; questionType: string; maxSelections: number | null; options: { value: string }[] }>();
   for (const snap of snapshotsRows.results) {
     const opts = await db.prepare(
-      "SELECT value FROM QuestionSnapshotOption WHERE snapshotId = ?"
+      "SELECT value FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId = ?"
     ).bind(snap.id).all<{ value: string }>();
     snapshotMap.set(snap.id, { ...snap, options: opts.results });
   }
@@ -122,28 +123,27 @@ export const POST = apiHandler(async (request: NextRequest) => {
       return fail(MESSAGES.incompleteAnswers, 400);
     }
 
-    // Cardinality enforcement per question type.
-    if (snapshot.questionType === "single_choice") {
-      if (ans.selectedValues.length !== 1) {
-        return fail(MESSAGES.incompleteAnswers, 400);
-      }
-    } else if (snapshot.questionType === "multi_choice") {
-      const max = snapshot.maxSelections;
-      if (max !== null && max !== undefined && ans.selectedValues.length > max) {
-        return fail(MESSAGES.incompleteAnswers, 400);
-      }
-    } else {
-      // Future section should only contain single_choice / multi_choice —
-      // any other type is a config error; reject as incomplete.
+    // Cardinality + option-set enforcement (spec §9) — server side, using
+    // the shared validation so the limits can never be bypassed.
+    if (
+      snapshot.questionType !== "single_choice" &&
+      snapshot.questionType !== "multi_choice"
+    ) {
       return fail(MESSAGES.incompleteAnswers, 400);
     }
+    const allowedValues = snapshot.options.map((o) => o.value);
+    const validation = validateSelections({
+      questionType: snapshot.questionType,
+      maxSelections: snapshot.maxSelections,
+      selectedValues: ans.selectedValues,
+      allowedValues,
+      isRequired: snapshot.isRequired === 1,
+    });
+    if (!validation.ok) {
+      return fail(validation.errorAr ?? MESSAGES.incompleteAnswers, 400);
+    }
 
-    // Validate each selectedValue exists in the option set.
-    const validValues = new Set(snapshot.options.map((o) => o.value));
     for (const sel of ans.selectedValues) {
-      if (!validValues.has(sel)) {
-        return fail(MESSAGES.incompleteAnswers, 400);
-      }
       responseRows.push({
         questionSnapshotId: snapshot.id,
         selectedValue: sel,

@@ -77,7 +77,9 @@ export const POST = apiHandler(
               q.id AS qId, q.code AS qCode, q.questionAr AS qQuestionAr,
               q.questionType AS qQuestionType, q.section AS qSection,
               q.dimension AS qDimension, q.isActive AS qIsActive,
-              q.deletedAt AS qDeletedAt, q.maxSelections AS qMaxSelections
+              q.deletedAt AS qDeletedAt, q.maxSelections AS qMaxSelections,
+              q.categoryCode AS qCategoryCode, q.categoryAr AS qCategoryAr,
+              q.scaleCode AS qScaleCode, q.scope AS qScope
        FROM CampaignQuestionConfig cqc
        JOIN Question q ON q.id = cqc.questionId
        WHERE cqc.campaignId = ?`
@@ -133,8 +135,9 @@ export const POST = apiHandler(
           `INSERT INTO CampaignQuestionSnapshot
              (id, campaignId, originalQuestionId, questionCode, questionAr,
               questionType, section, dimension, isRequired, displayOrder,
-              maxSelections, createdAt)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+              maxSelections, categoryCode, categoryAr, scaleCode, scope,
+              createdAt)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
         ).bind(
           snapshotId,
           id,
@@ -146,7 +149,11 @@ export const POST = apiHandler(
           qc.qDimension,
           qc.isRequired ? 1 : 0,
           qc.displayOrder,
-          qc.qMaxSelections ?? null
+          qc.qMaxSelections ?? null,
+          qc.qCategoryCode ?? qc.qDimension ?? null,
+          qc.qCategoryAr ?? null,
+          qc.qScaleCode ?? null,
+          qc.qScope ?? null
         )
       );
       snapshotCount++;
@@ -165,15 +172,19 @@ export const POST = apiHandler(
           db.prepare(
             `INSERT INTO CampaignQuestionOptionSnapshot
                (id, campaignQuestionSnapshotId, value, labelAr, score,
-                displayOrder, createdAt)
-             VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`
+                displayOrder, isFavorable, isUnfavorable,
+                isExcludedFromCalculation, createdAt)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
           ).bind(
             crypto.randomUUID(),
             snapshotId,
             opt.value,
             opt.labelAr,
             opt.score ?? null,
-            opt.displayOrder
+            opt.displayOrder,
+            opt.isFavorable ? 1 : 0,
+            opt.isUnfavorable ? 1 : 0,
+            opt.isExcludedFromCalculation ? 1 : 0
           )
         );
         optionSnapshotCount++;

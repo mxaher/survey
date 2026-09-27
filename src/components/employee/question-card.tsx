@@ -29,6 +29,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScaleRadio } from "./scale-radio";
 import type { QuestionSnapshot } from "./types";
+import { CATEGORY_LABEL_AR } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 interface QuestionCardProps {
@@ -112,7 +113,7 @@ export function QuestionCard({
                   variant="outline"
                   className="text-[10px] font-medium text-primary/80 border-primary/30 bg-primary/5"
                 >
-                  {question.dimension}
+                  {CATEGORY_LABEL_AR[question.dimension] ?? question.dimension}
                 </Badge>
               ) : null}
               {question.isRequired ? (
@@ -144,13 +145,28 @@ export function QuestionCard({
       </CardHeader>
       <CardContent className="pt-0">
         {isScale ? (
-          <ScaleRadio
-            options={question.options}
-            value={value}
-            onValueChange={(v) => onValueChange?.(v)}
-            disabled={disabled}
-            name={fieldName}
-          />
+          <div className="space-y-2.5">
+            {qType === "scale" ? (
+              <div className="space-y-1 text-xs leading-relaxed text-muted-foreground">
+                <p>
+                  اختر الإجابة التي تصف تكرار السلوك كما تراه في العمل الفعلي.
+                </p>
+                {question.options.some((o) => o.value === "not_applicable") ? (
+                  <p>
+                    اختر «لا ينطبق / لا أملك معلومات كافية» إذا لم تكن لديك
+                    تجربة كافية للحكم على هذا البند.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+            <ScaleRadio
+              options={question.options}
+              value={value}
+              onValueChange={(v) => onValueChange?.(v)}
+              disabled={disabled}
+              name={fieldName}
+            />
+          </div>
         ) : isSingle ? (
           <RadioGroup
             value={value}

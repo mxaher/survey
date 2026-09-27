@@ -12,6 +12,16 @@ export const LEADERSHIP_DIMENSIONS = [
   { key: "development",        labelAr: "التطوير والتقدير" },
   { key: "collaboration",      labelAr: "التعاون" },
   { key: "role_model",         labelAr: "القيادة بالقدوة" },
+  // Approved question-bank reporting categories (spec §8).
+  { key: "respect_professionalism", labelAr: "الاحترام والمهنية" },
+  { key: "fairness_objectivity",    labelAr: "العدالة والموضوعية" },
+  { key: "communication_clarity",   labelAr: "وضوح التواصل" },
+  { key: "listening_psychological_safety", labelAr: "الاستماع والأمان النفسي" },
+  { key: "followup_problem_solving", labelAr: "المتابعة وحل المشكلات" },
+  { key: "development_knowledge_transfer", labelAr: "التطوير ونقل المعرفة" },
+  { key: "recognition_motivation",  labelAr: "التقدير والتحفيز" },
+  { key: "accountability",          labelAr: "المساءلة" },
+  { key: "leadership_impact",       labelAr: "أثر القيادة" },
 ] as const;
 
 export const ENVIRONMENT_DIMENSIONS = [
@@ -19,11 +29,36 @@ export const ENVIRONMENT_DIMENSIONS = [
   { key: "communication",       labelAr: "التواصل" },
   { key: "leadership",          labelAr: "القيادة" },
   { key: "empowerment",         labelAr: "التمكين" },
-  { key: "development",        labelAr: "التطوير" },
-  { key: "collaboration",      labelAr: "التعاون" },
-  { key: "psych_safety",       labelAr: "الأمان النفسي" },
-  { key: "role_clarity",       labelAr: "وضوح الأدوار" },
+  { key: "development",         labelAr: "التطوير" },
+  { key: "collaboration",       labelAr: "التعاون" },
+  { key: "psych_safety",        labelAr: "الأمان النفسي" },
+  { key: "role_clarity",        labelAr: "وضوح الأدوار" },
+  // Approved question-bank reporting categories (spec §8).
+  { key: "org_respect_safety",  labelAr: "الاحترام والسلامة" },
+  { key: "org_fairness_performance", labelAr: "العدالة والأداء" },
+  { key: "org_communication_collaboration", labelAr: "التواصل والتعاون" },
+  { key: "org_development_recognition", labelAr: "التطوير والتقدير" },
+  { key: "org_alignment_retention", labelAr: "الانسجام والاستبقاء" },
 ] as const;
+
+/** Future-survey reporting categories (choice questions, no scale score). */
+export const FUTURE_CATEGORIES = [
+  { key: "future_priorities",       labelAr: "أولويات التحسين" },
+  { key: "future_leadership",       labelAr: "السلوك الإداري المطلوب" },
+  { key: "future_work_environment", labelAr: "بيئة العمل المستهدفة" },
+] as const;
+
+/** Every reporting category used by the approved question bank. */
+export const REPORT_CATEGORIES = [
+  ...LEADERSHIP_DIMENSIONS,
+  ...ENVIRONMENT_DIMENSIONS,
+  ...FUTURE_CATEGORIES,
+] as const;
+
+/** code → Arabic label, used when a snapshot carries no stored label. */
+export const CATEGORY_LABEL_AR: Record<string, string> = Object.fromEntries(
+  REPORT_CATEGORIES.map((c) => [c.key, c.labelAr])
+);
 
 export const CAMPAIGN_STATUSES = [
   { key: "draft",     labelAr: "مسودة",       color: "secondary" },

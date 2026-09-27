@@ -112,6 +112,7 @@ bun run deploy
 |---|---|
 | `bun run dev` | Start dev server on port 3000 (Turbopack) |
 | `bun run lint` | ESLint check (must be 0 errors) |
+| `bun test tests` | Bun test suite (migrations, scoring engine, report endpoints, exports) |
 | `bun run build` | Production build |
 | `bun run db:migrate` | Run D1 migrations locally |
 | `bun run db:migrate:prod` | Run D1 migrations against production |
@@ -265,9 +266,10 @@ At campaign activation (`POST /api/admin/campaigns/:id/activate`):
 
 ### Threshold Suppression
 
-- **Section-level**: if distinct submitters (`responseGroupId` count) < `minimumReportingThreshold`, the whole section returns `{ suppressed: true, message: "لا تتوفر بيانات كافية..." }`
+- **Section-level**: if distinct submitters (`responseGroupId` count) < `minimumReportingThreshold` (default **7**), the section returns a spec §8 gate: `{ reportAvailable: false, reason: "minimum_threshold_not_met", messageAr: "لا يمكن عرض نتائج هذه المجموعة حالياً حفاظاً على سرية المشاركين.", suppressed: true, respondentCount }` (legacy `suppressed` kept for old consumers)
 - **Per-question**: if an individual question has `count < threshold`, that question's averages/distribution are masked (but the question text + raw count are still returned)
-- Applied to all 3 report endpoints: environment, future, executive
+- Applied to all 4 report endpoints: environment, future, executive, summary — and to every export type (a blocked export downloads a one-row notice instead of data)
+- Report + export responses send `Cache-Control: no-store`
 
 ### What Must NEVER Happen
 
@@ -327,10 +329,11 @@ All API routes are relative: `GET /api/...` (the Caddy gateway proxies `:81` →
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/admin/reports/:campaignId` | Campaign overview (counts + suppressed flags) |
+| GET | `/api/admin/reports/:campaignId/summary` | Campaign summary (aggregate metrics + participation, threshold-gated) |
 | GET | `/api/admin/reports/:campaignId/environment` | Env per-question aggregates (threshold-suppressed) |
 | GET | `/api/admin/reports/:campaignId/future` | Future per-question distribution |
 | GET | `/api/admin/reports/:campaignId/executive/:executiveId` | Per-exec dimension rollups + strengths/improvements |
-| GET | `/api/admin/reports/:campaignId/export?format=csv\|xlsx` | CSV (UTF-8 BOM) or XLSX (2-sheet RTL workbook) |
+| GET | `/api/admin/reports/:campaignId/export?type=...&format=csv\|xlsx` | 6 export types: `executive_questions`, `executive_summary`, `environment_summary`, `environment_questions`, `future_priorities`, `campaign_summary` (UTF-8 BOM CSV or RTL XLSX; audited as `report.export`) |
 | GET | `/api/admin/reports/trend?status=all\|active\|closed` | Cross-campaign trend data |
 | GET | `/api/admin/reports/trend/export?format=csv\|xlsx&status=...` | Trend CSV/XLSX export |
 
@@ -452,8 +455,11 @@ EmployeeApp (employee-app.tsx)
 | `employee-hmac.ts` | HMAC-SHA256 + `newResponseGroupId()` (random UUID) |
 | `audit.ts` | `writeAudit()` — safe audit log writer (no employee data) |
 | `audit-display.ts` | Shared `actionTone()` + `ENTITY_LABELS_AR` (used by audit view + dashboard) |
-| `constants.ts` | CAMPAIGN_STATUSES, QUESTION_TYPES, STANDARD_SCALES, LEADERSHIP_DIMENSIONS, FAVORABLE_VALUES |
+| `constants.ts` | CAMPAIGN_STATUSES, QUESTION_TYPES, STANDARD_SCALES, LEADERSHIP_DIMENSIONS, FAVORABLE_VALUES, CATEGORY_LABEL_AR, REPORT_CATEGORIES |
 | `messages.ts` | All Arabic system messages (single source of truth per spec §4) |
+| `scoring.ts` | Score validation, averages/index, distribution buckets, band + classification labels |
+| `reporting.ts` | Report builders (environment/future/executive/summary) with spec §8 threshold gates |
+| `report-export.ts` | CSV/XLSX builders for the 6 export types (RTL workbook, blocked-notice tables) |
 | `time.ts` | `toRiyadhDisplay()`, `toRiyadhDate()`, `nowUtc()`, `isWithinActiveWindow()` |
 | `readiness.ts` | `checkReadiness(campaignId)` — 9-point validation before activation |
 | `utils.ts` | `cn()` (clsx + tailwind-merge) |
@@ -470,7 +476,16 @@ EmployeeApp (employee-app.tsx)
 ├── wrangler.toml                   # Cloudflare Workers + D1 config
 ├── open-next.config.ts             # OpenNext.js Cloudflare adapter
 ├── migrations/
-│   └── 0001_init.sql               # D1 schema (13 tables)
+│   ├── 0001_init.sql               # D1 schema (13 tables)
+│   ├── 0002_seed.sql               # Legacy seed (demo campaign, questions, executives)
+│   ├── 0003_*.sql–0005_*.sql       # Indexes, hardening, registration
+│   ├── 0006_scoring_schema.sql     # category/scale/scope + sentiment flags + indexes
+│   └── 0007_question_bank_seed.sql # 36 approved questions + 228 options, camp-001 rewired (threshold 7)
+├── tests/
+│   ├── helpers/d1.ts               # In-memory D1 (bun:sqlite) + apiRequest helpers
+│   ├── support/                    # bun:test / bun:sqlite ambient types
+│   ├── unit/scoring.test.ts        # Pure scoring engine assertions
+│   └── integration/                # migrations + report/summary/export endpoints
 ├── scripts/                        # Dev utilities (run with `bun run scripts/X.ts`)
 │   ├── promote-admin.ts          # Promote dev admin to SUPER_ADMIN
 │   ├── seed-responses.ts         # Seed executive evaluations
@@ -573,10 +588,11 @@ Common keys:
 ### After Changes
 
 1. Run `bun run lint`
-2. Smoke-test views: `curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000/?view=admin&tab=dashboard"`
-3. Use `agent-browser open` + `snapshot` to verify rendering
-4. Use VLM (`z-ai vision`) for visual design QA
-5. Append a new section to `worklog.md`
+2. Run `bun test tests` (must be all green — migrations apply from scratch on every run)
+3. Smoke-test views: `curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000/?view=admin&tab=dashboard"`
+4. Use `agent-browser open` + `snapshot` to verify rendering
+5. Use VLM (`z-ai vision`) for visual design QA
+6. Append a new section to `worklog.md`
 
 ### Worklog Format
 
@@ -597,6 +613,7 @@ Stage Summary:
 ### Seeding Demo Data
 
 ```bash
+bun run db:migrate                  # Applies 0001–0007 (0007 seeds the approved question bank)
 bun run db:seed                    # Initial seed (questions, execs, demo campaign)
 bun run scripts/set-dates.ts       # Set demo campaign dates (for activation)
 bun run scripts/seed-responses.ts  # Seed executive evaluations (6 employees × 5 execs)
@@ -604,6 +621,11 @@ bun run scripts/seed-env-future.ts # Seed environment + future responses
 bun run scripts/set-eligible-count.ts # Set eligible_employees_count = 50
 bun run scripts/promote-admin.ts   # Promote dev admin to SUPER_ADMIN
 ```
+
+Migration `0007_question_bank_seed.sql` is idempotent (keyed on `Question.code`, `INSERT OR
+IGNORE`): re-running never duplicates rows. Its 36-row question insert is deliberately split
+into three 12-row statements — D1 rejects single statements with more than ~500 compound
+column-terms (`too many terms in compound SELECT`).
 
 ### Activating the Demo Campaign
 
@@ -648,22 +670,32 @@ A `webDevReview` cron job (id 404970) fires every 15 minutes (`fixed_rate: 900`,
 
 4. **Eligible employee count** — The participation rate metric depends on a manually-set `SystemSetting` (`eligible_employees_count`), not an automated HR feed.
 
-5. **Per-question threshold suppression** — Applied to all 3 report endpoints (environment, future, executive). The UI shows a Lock icon + "أقل من حد الإخفاء" message for suppressed questions.
+5. **Per-question threshold suppression** — Applied to all 4 report endpoints (environment, future, executive, summary) and to every export. The UI shows a Lock icon + "أقل من حد الإخفاء" message for suppressed questions.
 
 6. **Print CSS** — Comprehensive `@media print` block exists in `globals.css`, but some chart-heavy views may not print perfectly (Recharts SVGs can overflow on small pages).
 
 ---
 
-## Scoring Formulas
+## Scoring Formulas (spec §5/§8)
 
 ```
-average_score = sum(valid_scores) / count(valid_scores)     // not_applicable excluded
-favorable_rate = count(always_or_often) / count(valid_responses)
+valid        = numeric score AND value != 'not_applicable'
+average      = sum(valid) / count(valid)                  // null when none valid
+index        = average / 5 * 100
+favorable%   = count(always + often) / count(valid) * 100
+neutral%     = count(sometimes) / count(valid) * 100
+unfavorable% = count(rarely + never) / count(valid) * 100
+not_applicable% = count(na) / count(submitted) * 100      // null when none submitted
+future rate  = count(picked) / unique respondent_groups * 100   // ranked desc, max 3 picks each
 ```
 
-- "Valid" = `selectedScore !== null` (excludes "لا ينطبق" / not_applicable)
+- "Valid" = `selectedScore !== null` (excludes "لا ينطبق" / `not_applicable`)
 - Favorable values: `always`, `often`, `agree_strongly`, `agree` (see `FAVORABLE_VALUES` in `constants.ts`)
 - Scoring is database-driven (option.score field), not hard-coded
+- Engine: `src/lib/scoring.ts` + `src/lib/reporting.ts`; Arabic copy: `src/lib/messages.ts`
+- Band per average: ≥4.50 مرتفع · ≥4.00 فوق المتوسط · ≥3.50 متوسط · ≥3.00 منخفض · else منخفض جداً
+- Classification: **strength** (avg ≥4.00 AND favorable ≥75%) · **development** (avg <3.50 OR unfavorable ≥20%) · **priority** (avg <3.00 OR unfavorable ≥30%)
+- Test suite (`bun test tests`) hand-computes these metrics against fixture data and asserts the spec+legacy payload shape, suppression gates, no-identity leakage, and all 6 export types
 
 ---
 

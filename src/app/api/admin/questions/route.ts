@@ -9,6 +9,7 @@ import {
   QUESTION_TYPES,
   QUESTION_SECTIONS,
 } from "@/lib/constants";
+import { optionSentiment } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
 
@@ -59,7 +60,8 @@ export const GET = apiHandler(async (request: NextRequest) => {
   const { results: questions } = await db
     .prepare(
       `SELECT q.id, q.code, q.questionAr, q.questionType, q.section,
-              q.dimension, q.isRequired, q.displayOrder, q.maxSelections,
+              q.dimension, q.categoryCode, q.categoryAr, q.scaleCode, q.scope,
+              q.isRequired, q.displayOrder, q.maxSelections,
               q.version, q.parentQuestionId, q.isCurrent, q.isActive,
               q.deletedAt, q.createdAt, q.updatedAt
        FROM Question q
@@ -97,6 +99,10 @@ export const GET = apiHandler(async (request: NextRequest) => {
       questionType: q.questionType,
       section: q.section,
       dimension: q.dimension,
+      categoryCode: q.categoryCode,
+      categoryAr: q.categoryAr,
+      scaleCode: q.scaleCode,
+      scope: q.scope,
       isRequired: q.isRequired,
       displayOrder: q.displayOrder,
       maxSelections: q.maxSelections,
@@ -133,6 +139,8 @@ const optionSchema = z.object({
  *   - options: array of { value, labelAr, score?, displayOrder? }
  * Audits `question.create`.
  */
+const flag = (v: boolean): number => (v ? 1 : 0);
+
 const createSchema = z.object({
   code: z
     .string()
@@ -154,6 +162,10 @@ const createSchema = z.object({
       message: "قسم السؤال غير معروف.",
     }),
   dimension: z.string().trim().optional().nullable(),
+  categoryCode: z.string().trim().optional().nullable(),
+  categoryAr: z.string().trim().optional().nullable(),
+  scaleCode: z.string().trim().optional().nullable(),
+  scope: z.string().trim().optional().nullable(),
   isRequired: z.coerce.boolean().default(true),
   displayOrder: z.coerce.number().int().min(0).default(0),
   maxSelections: z.coerce.number().int().min(1).optional().nullable(),
@@ -200,8 +212,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
     db
       .prepare(
         `INSERT INTO Question (id, code, questionAr, questionType, section, dimension,
+         categoryCode, categoryAr, scaleCode, scope,
          isRequired, displayOrder, maxSelections, isActive, version, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
       )
       .bind(
         questionId,
@@ -210,6 +223,10 @@ export const POST = apiHandler(async (request: NextRequest) => {
         input.questionType,
         input.section,
         input.dimension ?? null,
+        input.categoryCode ?? input.dimension ?? null,
+        input.categoryAr ?? null,
+        input.scaleCode ?? null,
+        input.scope ?? (input.section === "leadership" ? "executive" : "organization"),
         input.isRequired ? 1 : 0,
         input.displayOrder,
         input.maxSelections ?? null,
@@ -221,8 +238,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
     statements.push(
       db
         .prepare(
-          `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder, isActive)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO QuestionOption (id, questionId, value, labelAr, score, displayOrder,
+           isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           crypto.randomUUID(),
@@ -231,6 +249,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
           opt.labelAr,
           opt.score ?? null,
           opt.displayOrder,
+          flag(optionSentiment(opt.value, opt.score ?? null, input.questionType).isFavorable),
+          flag(optionSentiment(opt.value, opt.score ?? null, input.questionType).isUnfavorable),
+          flag(optionSentiment(opt.value, opt.score ?? null, input.questionType).isExcludedFromCalculation),
           opt.isActive ? 1 : 0
         )
     );
@@ -279,6 +300,10 @@ export const POST = apiHandler(async (request: NextRequest) => {
       questionType: q!.questionType,
       section: q!.section,
       dimension: q!.dimension,
+      categoryCode: q!.categoryCode,
+      categoryAr: q!.categoryAr,
+      scaleCode: q!.scaleCode,
+      scope: q!.scope,
       isRequired: q!.isRequired,
       displayOrder: q!.displayOrder,
       maxSelections: q!.maxSelections,

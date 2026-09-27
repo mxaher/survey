@@ -8,6 +8,7 @@
     "build:next": "npx next build",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
+    "test": "bun test tests/",
     "db:local": "wrangler dev",
     "db:migrate": "wrangler d1 migrations apply almrshad-survey-db --local",
     "db:migrate:prod": "wrangler d1 migrations apply almrshad-survey-db",

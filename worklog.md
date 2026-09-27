@@ -1176,3 +1176,72 @@ Task: Dark mode toggle + notifications bell + campaigns list status filter.
 3. Add a "dark mode" persistence indicator in the employee view (currently the toggle only appears in the admin header).
 4. Add notification preferences (let admins choose which notification types they want to see).
 5. Consider adding a "campaign calendar" view showing all campaigns on a timeline.
+
+---
+
+## Round 11 goals
+
+1. **Password auth + employee self-registration** (hardening: replace dev bootstrap).
+2. **Seed the approved Arabic question bank** into D1 idempotently (36 questions, 3 answer scales).
+3. **Server-side scoring / aggregation / reporting / exports** per spec §5–§10 (threshold gate, 6 export types).
+4. **Employee-facing Arabic copy** for the new sections + scale instructions.
+5. **Automated test suite** (Bun) covering migrations, scoring math, report payloads, exports.
+
+## Completed modifications
+
+> Note: items 1 (auth) shipped earlier in commits `3165501`, `d3b34da`, `9609547` without a
+> worklog entry — documented in README (Admin Auth / Auth + Accounts sections).
+
+### 1. Password auth + registration (shipped)
+- **`src/lib/env.ts`**, **`src/lib/email.ts`** — Worker env bindings (HMAC/admin secrets) + provider-chain email (Resend → Mailjet) used by verification links.
+- **`migrations/0005_registration.sql`** — employee account + verification tables; applied to prod.
+- Routes: `/api/auth/{setup,login,logout,me,register,verify,resend-verification}`, `/api/admin/employees` CRUD (SUPER_ADMIN mutations), rate-limited login.
+- Fix: HMAC secret read from the Worker env binding (`d3b34da`).
+
+### 2. Question-bank migrations (0006 + 0007)
+- **`migrations/0006_scoring_schema.sql`** (26 statements) — `ALTER TABLE Question` adds `categoryCode/categoryAr/scaleCode/scope`; `QuestionOption` + `CampaignQuestionOptionSnapshot` add `isFavorable/isUnfavorable/isExcludedFromCalculation`; `CampaignQuestionSnapshot` gets the 4 question columns; backfills + 8 indexes. **Applied to prod D1.**
+- **`migrations/0007_question_bank_seed.sql`** (11 statements) — 36 questions (`20 LEAD_* / 13 ENV_* / 3 FUTURE_*`), 198 frequency options built by `SELECT × JOIN` over 33 scale questions, 12/10/8 future options via small `UNION ALL` selects, `camp-001` rewired to the new codes (`draft`, `minimumReportingThreshold = 7`, stale snapshots deleted). Idempotent: keyed on `Question.code` + `INSERT OR IGNORE`, safe to re-run.
+- **Prod D1 issue found & fixed in source**: first remote apply failed with `too many terms in compound SELECT: SQLITE_ERROR [code: 7500]`. Root cause: the single 36-row × 15-column `INSERT … VALUES` = 540 column-terms (D1's compound budget ≈ 500; the long-standing 0002 seed insert was 36×11 = 396 and passes). Rewrote it as **three 12-row statements** (180 terms each); scanned every statement in 0006/0007 for other over-budget candidates (largest other = 77 terms) — none. `0007` still needs the remote apply (see risks).
+
+### 3. Scoring + reporting engine (new libs)
+- **`src/lib/scoring.ts`** — valid-score filtering (excludes `not_applicable`), average/index, distribution buckets, band labels (مرتفع … منخفض جداً), classification (strength avg ≥4.00 & favorable ≥75%; development avg <3.50 or unfavorable ≥20%; priority avg <3.00 or unfavorable ≥30%).
+- **`src/lib/reporting.ts`** — report builders for environment/future/executive/summary; spec §8 gate (`reportAvailable:false, reason:"minimum_threshold_not_met", messageAr:"لا يمكن عرض نتائج هذه المجموعة حالياً حفاظاً على سرية المشاركين."`, threshold default **7**) returned alongside the legacy `suppressed` shape; `favorableRate` fraction + `distribution` array where key types collide; `orgWideComparison`; suppression zeroes all metrics.
+- **`src/lib/report-export.ts`** — CSV (UTF-8 BOM, RFC-style quoting) + RTL XLSX builders for the 6 types: `executive_questions`, `executive_summary`, `environment_summary`, `environment_questions`, `future_priorities`, `campaign_summary`; blocked exports download a one-row notice.
+- **`src/lib/messages.ts` / `constants.ts`** — spec Arabic copy + `CATEGORY_LABEL_AR`, `REPORT_CATEGORIES`.
+
+### 4. Report endpoints (thin wrappers + `no-store`)
+- Rewritten: `reports/[campaignId]/{environment,future,executive/[executiveId],export}`; **new** `reports/[campaignId]/summary`. All `Cache-Control: no-store`; export validates `type` + `format`, writes a `report.export` audit entry with no employee data, defaults to `executive_questions`.
+- Employee submit routes (`environment/submit`, `future/submit`, `evaluations/submit`) now read answers from `CampaignQuestionOptionSnapshot` (+ `validateSelections`); campaign activation copies the new category/scale/scope + sentiment flags into snapshots.
+
+### 5. Admin question library CRUD
+- **`api/admin/questions/route.ts`** — INSERT placeholder count fixed (13 → 14 `?`), `optionSentiment` typo fixed; create now persists the 4 question fields + 3 option flags.
+- **`api/admin/questions/[id]/route.ts`** — GET/PATCH return + accept `categoryCode/categoryAr/scaleCode/scope` and `isFavorable/isUnfavorable/isExcludedFromCalculation`; option updates recompute the flags from `value`/`score`.
+
+### 6. Employee-facing Arabic copy
+- **`survey-wizard.tsx`** — section headers → "بيئة العمل العامة" / "تقييم المسؤول" / "أولويات التحسين المستقبلية" with spec descriptions; STEP labels aligned; **`question-card.tsx`** — dimension badge uses `CATEGORY_LABEL_AR`, scale questions show the Arabic frequency instruction, NA hint when a `not_applicable` option exists.
+
+### 7. Test suite (new)
+- **`bun test tests`** script in `package.json`; ambient `bun:test` + `bun:sqlite` types (no `bun-types` — clashes with `@types/node`).
+- **`tests/integration/migrations.test.ts`** — all migrations apply on a fresh in-memory DB, twice (idempotency), asserting the 36/228 question-option counts.
+- **`tests/unit/scoring.test.ts`** — engine math incl. NA handling and future selection rates.
+- **`tests/integration/reports.test.ts`** (~850 lines) — fixture campaigns above/below threshold 7, hand-computed metrics (overall 3.00/60.0/38.46/15.38/46.15/7.14; respect 4.33/86.60/83.33; fairness 1.86/37.20/85.71), spec+legacy payload duality, per-question suppression, no-identity-leak assertions, environment/future/summary math, all 6 export types (blocked vs data), `tableToCsv`/`tableToXlsx`/`csvField`.
+
+## Verification results
+- `bun test tests` → **48 pass / 0 fail / 346 assertions** (fresh DB per run).
+- `npx tsc --noEmit` → 22 error lines, **all pre-existing** (examples/scripts/prisma + old admin views; strictly ≤ the pre-round baseline of 22 — the 2 old `tests/helpers/d1.ts` errors are fixed).
+- `npx eslint src tests` → exit 0, no findings.
+- Prod D1: `0006` applied; `0007` **not yet applied** (see risks). CI (Cloudflare Workers Builds) builds + deploys on push — build status reported from the dashboard, not run locally.
+
+## Unresolved issues / risks
+- **`0007_question_bank_seed.sql` is fixed in source but not applied to prod D1** — `wrangler d1 migrations apply almrshad-survey-db --remote` still has 0007 pending (0006 succeeded). Until it runs, prod keeps the legacy question set and `camp-001` keeps its old threshold.
+- **Save/resume draft** — still returns 501 (architectural decision pending).
+- **Real SSO/IdP** — still dev-mode cookie impersonation.
+- **Campaign comparison export with chart PNG embedded in XLSX** — deferred (server-side chart rendering).
+- **Campaign summary PDF export** — deferred.
+
+## Priority recommendations for next round
+1. Apply the fixed `0007` to prod D1 (`npx wrangler d1 migrations apply almrshad-survey-db --remote`) and confirm `camp-001` shows threshold 7 + the new bank; then trigger/verify a CI deploy.
+2. Point the admin reports UI at the new spec-shaped payloads (summary route, 6 export types) — the backend is ready, the old views still read the legacy fields.
+3. Campaign comparison export with chart PNG embedded in XLSX (round 5 #3, deferred).
+4. Campaign summary PDF export (round 9 #3, deferred).
+5. Dark-mode persistence indicator in the employee view + notification preferences (round 10 leftovers).

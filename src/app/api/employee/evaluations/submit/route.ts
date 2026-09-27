@@ -108,7 +108,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
   const snapshotMap = new Map<string, { id: string; isRequired: number; options: { value: string; score: number | null }[] }>();
   for (const snap of snapshotsRows.results) {
     const opts = await db.prepare(
-      "SELECT value, score FROM QuestionSnapshotOption WHERE snapshotId = ?"
+      "SELECT value, score FROM CampaignQuestionOptionSnapshot WHERE campaignQuestionSnapshotId = ?"
     ).bind(snap.id).all<{ value: string; score: number | null }>();
     snapshotMap.set(snap.id, { ...snap, options: opts.results });
   }
