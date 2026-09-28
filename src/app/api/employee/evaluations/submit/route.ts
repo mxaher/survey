@@ -202,7 +202,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     //     it SQLite leaves the TEXT primary key NULL on every row.
     const ledgerStmt = db.prepare(
       `INSERT INTO ParticipationLedger (id, campaignId, executiveId, employeeHmac, participationType, scopeKey, status, submittedAt)
-       VALUES (?, ?, ?, ?, ?, 'executive', ?, 'submitted', ?)`
+       VALUES (?, ?, ?, ?, 'executive', ?, 'submitted', ?)`
     ).bind(randomUUID(), campaign.id, body.executiveId, employeeHmac, body.executiveId, now);
 
     // 6b. Build response insert statements — one per answer.
