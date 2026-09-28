@@ -287,9 +287,13 @@ export function AdminApp() {
           </SheetTrigger>
           <SheetContent side="end" className="w-72 p-0">
             <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-              <div className="h-8 w-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold text-sm">
-                الم
-              </div>
+              <img
+                src="/almarshad-mark.png"
+                alt="المرشد القابضة"
+                width={32}
+                height={32}
+                className="h-8 w-8 shrink-0 object-contain"
+              />
               <p className="text-sm font-semibold">لوحة تحكم الاستبيان</p>
             </div>
             {navList}
@@ -297,9 +301,13 @@ export function AdminApp() {
         </Sheet>
 
         <div className="hidden md:flex items-center gap-2">
-          <div className="h-8 w-8 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold text-sm">
-            الم
-          </div>
+          <img
+            src="/almarshad-mark.png"
+            alt="المرشد القابضة"
+            width={32}
+            height={32}
+            className="h-8 w-8 shrink-0 object-contain"
+          />
           <p className="text-sm font-semibold">لوحة تحكم استبيان المرشد</p>
         </div>
       </div>

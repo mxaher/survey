@@ -17,9 +17,8 @@ export const metadata: Metadata = {
     "منصة استبيان موظفين مجهولة الهوية لقياس بيئة العمل والقيادة المؤسسية في مجموعة المرشد.",
   keywords: ["استبيان", "بيئة العمل", "القيادة", "المرشد", "Almarshad"],
   authors: [{ name: "Almarshad Holding" }],
-  icons: {
-    icon: "/logo.svg",
-  },
+  // Favicon comes from the Next.js file convention: `src/app/icon.png` and
+  // `src/app/apple-icon.png` (Almarshad Holding mark).
 };
 
 export default function RootLayout({
