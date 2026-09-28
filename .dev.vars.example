@@ -2,15 +2,15 @@
 # Copy this file to .dev.vars and fill in the values
 # NEVER commit .dev.vars to version control
 
-# Cloudflare Access (background corporate identity verification)
-# The employee survey flow does NOT show a username/password form: eligibility
-# is verified from the Access JWT attached to the request by Cloudflare Access.
+# Cloudflare Access (optional edge identity)
+# By default employees sign in with email + password (restricted to
+# @almarshad.com). Setting BOTH values below lets Cloudflare Access
+# authenticate at the edge and attach `Cf-Access-JWT-Assertion`, which takes
+# precedence over the session:
 #   CF_ACCESS_TEAM_DOMAIN — your Cloudflare Zero Trust team domain, e.g.
 #                           https://almarshad.cloudflareaccess.com
 #   CF_ACCESS_AUD         — the Application Audience tag of the Access app
 #                           protecting this survey.
-# Leave both empty for local development: `getVerifiedEmployee()` then falls
-# back to the session / dev-impersonation path.
 # In production, set via: wrangler secret put CF_ACCESS_TEAM_DOMAIN / CF_ACCESS_AUD
 CF_ACCESS_TEAM_DOMAIN=
 CF_ACCESS_AUD=

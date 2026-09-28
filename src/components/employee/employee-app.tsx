@@ -18,10 +18,10 @@
  *   - `GET /api/employee/campaign` returns the active campaign + bundled
  *     environment + future question snapshots (Task 3-a extension) — single
  *     round-trip so the wizard can render steps 1 and 3 immediately.
- *   - On 401 → show a neutral "could not verify eligibility" card. No
- *     username/password form is ever rendered here: the corporate identity
- *     layer (Cloudflare Access) authenticates the visitor before the request
- *     reaches the app.
+ *   - On 401 → show the email + password sign-in card (`AuthCard`). Employees
+ *     sign in with their corporate @almarshad.com address, or self-register
+ *     from the same card; the session that results is what identifies the
+ *     visitor for the participation HMAC.
  *
  * The wizard itself (`SurveyWizard`) loads executives, participation-status,
  * and per-executive leadership questions via TanStack Query + the existing
@@ -30,12 +30,13 @@
  */
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ClipboardList, LogIn, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ClipboardList, LogIn, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { APP_TITLE, MESSAGES } from "@/lib/messages";
 import { ImpersonationBanner } from "./impersonation-banner";
+import { AuthCard } from "@/components/auth/auth-card";
 import { SurveyIntro } from "./survey-intro";
 import { SurveyWizard } from "./survey-wizard";
 import { SuccessScreen } from "./success-screen";
@@ -151,9 +152,13 @@ export function EmployeeApp() {
       <header className="sticky top-0 z-30 border-b border-border bg-card/95 backdrop-blur">
         <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-lg bg-primary text-primary-foreground grid place-items-center font-bold">
-              الم
-            </div>
+            <img
+              src="/almarshad-mark.png"
+              alt="المرشد القابضة"
+              width={36}
+              height={36}
+              className="h-9 w-9 shrink-0 object-contain"
+            />
             <div className="min-w-0">
               <p className="text-sm font-semibold text-foreground truncate">
                 مجموعة المرشد
@@ -179,7 +184,7 @@ export function EmployeeApp() {
         {phase === "loading" ? (
           <IntroSkeleton />
         ) : phase === "unauthorized" ? (
-          <AccessRequiredCard onRetry={() => campaignQuery.refetch()} />
+          <AuthCard canRegister />
         ) : phase === "no-campaign" ? (
           <NoActiveCampaignCard />
         ) : phase === "error" ? (
@@ -248,55 +253,6 @@ function IntroSkeleton() {
       <Skeleton className="h-32 w-full" />
       <Skeleton className="h-24 w-full" />
       <Skeleton className="h-10 w-1/3" />
-    </div>
-  );
-}
-
-/**
- * No verified identity on the request.
- *
- * Deliberately NOT a sign-in form: eligibility is verified in the background
- * by the corporate identity layer before the request reaches the app, so the
- * survey UI must never ask for a username or password (spec: "Do not show a
- * username/password registration page within the survey itself").
- *
- * The copy is neutral — it talks about access, never about the person.
- */
-function AccessRequiredCard({ onRetry }: { onRetry: () => void }) {
-  return (
-    <div className="mx-auto max-w-3xl">
-      <Card>
-        <CardContent className="py-12 text-center space-y-4">
-          <div className="mx-auto h-16 w-16 rounded-full bg-muted grid place-items-center">
-            <ShieldCheck className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">تعذّر التحقق من أهلية المشاركة</h2>
-            <p className="text-sm text-muted-foreground leading-relaxed">
-              يتم التحقق من أهلية المشاركة تلقائياً دون إدخال أي بيانات.
-              يرجى فتح الرابط من داخل بيئة العمل، أو المحاولة مرة أخرى، أو
-              التواصل مع مسؤول النظام إذا استمرت المشكلة.
-            </p>
-          </div>
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <Button
-              variant="outline"
-              size="default"
-              className="gap-2 min-h-[44px]"
-              onClick={onRetry}
-            >
-              <RefreshCw className="h-4 w-4" />
-              إعادة المحاولة
-            </Button>
-            <Button asChild variant="ghost" size="default" className="gap-2 min-h-[44px]">
-              <a href="/?view=admin">
-                <LogIn className="h-4 w-4" />
-                دخول الإدارة
-              </a>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

@@ -17,6 +17,9 @@ const loginSchema = z.object({
  * account so this endpoint cannot be used to enumerate accounts. */
 const INVALID_CREDENTIALS = "البريد الإلكتروني أو كلمة المرور غير صحيحة.";
 
+/** Employees may only sign in with this mailbox domain. */
+const EMPLOYEE_DOMAIN = "almarshad.com";
+
 interface AdminRow {
   id: string;
   externalId: string;
@@ -49,8 +52,10 @@ function clientIp(request: NextRequest): string {
 /**
  * POST /api/auth/login — email + password.
  * Admins match `AdminUser.externalId`/`email`; employees match
- * `EmployeeUser.email`. On success an opaque session row is created and the
- * httpOnly `session_token` cookie is set.
+ * `EmployeeUser.email` and must use a corporate `@almarshad.com` address (the
+ * gate runs after the admin lookup, so non-corporate admin accounts are not
+ * affected). On success an opaque session row is created and the httpOnly
+ * `session_token` cookie is set.
  */
 export const POST = apiHandler(async (request: NextRequest) => {
   const rl = await checkRateLimit(`login:${clientIp(request)}`);
@@ -98,6 +103,18 @@ export const POST = apiHandler(async (request: NextRequest) => {
     });
   }
 
+  // Employee sign-in is restricted to the corporate domain. The check runs
+  // after the admin lookup so non-corporate admin accounts keep working, and
+  // it depends only on the submitted address — never on whether an account
+  // exists — so it cannot be used to enumerate accounts.
+  const emailDomain = email.split("@")[1]?.toLowerCase() ?? "";
+  if (emailDomain !== EMPLOYEE_DOMAIN) {
+    return fail(
+      `الدخول متاح لموظفي الشركة فقط عبر بريد ‎@${EMPLOYEE_DOMAIN}‎.`,
+      401
+    );
+  }
+
   const employee = await db
     .prepare("SELECT * FROM EmployeeUser WHERE lower(email) = lower(?) LIMIT 1")
     .bind(email)
@@ -115,7 +132,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     // to discover whether an address is registered.
     if (!employee.emailVerified) {
       return fail(
-        "لم يتم تأكيد بريدك الإلكتروني بعد. تواصل مع مدير النظام.",
+        "لم يتم تأكيد بريدك الإلكتروني بعد. تفقّد بريدك لرابط التأكيد أو أعد إرساله.",
         403,
         { needsVerification: true }
       );

@@ -1,12 +1,13 @@
 /**
- * Background corporate identity providers (spec §"IDENTITY PROVIDER ABSTRACTION").
+ * Corporate identity providers (spec §"IDENTITY PROVIDER ABSTRACTION").
  *
- * The employee never sees a username/password screen. Identity is resolved
- * server-side from, in order:
+ * Resolved server-side from, in order:
  *
- *   1. a Cloudflare Access JWT on the request (the production path),
- *   2. an existing first-party session (local/dev, and any session already
- *      established through the admin shell),
+ *   1. a Cloudflare Access JWT on the request (when Access is configured, so
+ *      the visitor never needs the sign-in form),
+ *   2. an existing first-party session — the default path: the survey shell
+ *      renders the email + password card (`AuthCard`) on a 401, and employee
+ *      addresses are restricted to the corporate domain,
  *   3. the admin Employee Picker preview cookie — admin-gated, and refused on
  *      every submit endpoint.
  *

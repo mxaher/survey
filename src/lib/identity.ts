@@ -14,16 +14,18 @@ import {
  *
  * Resolved **server-side only**, in this order:
  *
- *   1. Cloudflare Access JWT (`Cf-Access-JWT-Assertion`) — the production
- *      path. The visitor is authenticated by the corporate identity layer
- *      before the request ever reaches the app, so no username/password
- *      screen is rendered. Only the verified `sub` is used, and only in
- *      memory, to key the participation HMAC.
+ *   1. Cloudflare Access JWT (`Cf-Access-JWT-Assertion`) — when
+ *      `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` are configured the visitor is
+ *      authenticated by the corporate identity layer before the request ever
+ *      reaches the app, so the sign-in form is never needed. Only the
+ *      verified `sub` is used, and only in memory, to key the participation
+ *      HMAC.
  *   2. An authenticated **employee session** created by `POST /api/auth/login`
- *      (email + password). The identifier hashed is the account email — never
- *      stored alongside responses, only as an HMAC in `ParticipationLedger`.
- *      No UI in the survey flow renders this form; it remains for local work
- *      and for sessions already established through the admin shell.
+ *      (email + password, corporate `@almarshad.com` addresses only). This is
+ *      the default path without Cloudflare Access: the survey shell renders
+ *      the `AuthCard` sign-in form on a 401, with self-registration beside
+ *      it. The identifier hashed is the account email — never stored
+ *      alongside responses, only as an HMAC in `ParticipationLedger`.
  *   3. The dev impersonation cookie written by the admin Employee Picker. Only
  *      honored for an authenticated admin, and refused by every submit
  *      endpoint — it is a preview tool, never a way to write participation.

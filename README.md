@@ -99,15 +99,17 @@ bun run db:migrate:prod
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
 npx wrangler secret put ADMIN_AUTH_SECRET
 
-# 4. Background identity verification (employee survey sign-in)
+# 4. Optional: edge identity (Cloudflare Access)
 npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   # e.g. https://almarshad.cloudflareaccess.com
 npx wrangler secret put CF_ACCESS_AUD           # audience tag of the Access app
-# Then create a Cloudflare Access application for the Worker's route and add
-# the employees as a policy group. No sign-in page is rendered by the app —
-# Access authenticates at the edge and attaches `Cf-Access-JWT-Assertion`.
+# Employees sign in with email + password by default. Setting these lets
+# Cloudflare Access authenticate at the edge and attach
+# `Cf-Access-JWT-Assertion`, which takes precedence over the session.
 
-# 5. Optional: transactional email
+# 5. Email provider (verification links for employee self-registration)
 npx wrangler secret put RESEND_API_KEY   # optional: Mailjet keys work too
+# Without a provider, registration still works but activates the account
+# immediately instead of emailing a one-time link.
 
 # 6. Build and deploy
 bun run deploy
@@ -143,26 +145,27 @@ npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 
 | Name | Kind | Purpose |
 |---|---|---|
-| `CF_ACCESS_TEAM_DOMAIN` | var/secret | Cloudflare Access team domain, e.g. `https://almarshad.cloudflareaccess.com` — background identity verification for the employee survey |
-| `CF_ACCESS_AUD` | var/secret | Audience tag of the Cloudflare Access application protecting this survey |
+| `CF_ACCESS_TEAM_DOMAIN` | var/secret | Optional: Cloudflare Access team domain, e.g. `https://almarshad.cloudflareaccess.com` — authenticates at the edge ahead of the session |
+| `CF_ACCESS_AUD` | var/secret | Optional: audience tag of the Access application |
 | `EMPLOYEE_HMAC_SECRET` | secret | HMAC key for the de-identified participation ledger (required) |
-| `RESEND_API_KEY` | secret | Primary email provider (admin-triggered notifications) |
+| `RESEND_API_KEY` | secret | Primary email provider (registration verification links + admin-triggered notifications) |
 | `MAILJET_API_KEY` / `MAILJET_SECRET_KEY` | secret | Fallback email provider |
 | `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` |
 | `EMAIL_FROM_NAME` | var | Optional sender display name (defaults to `استبيان بيئة العمل`) |
 
-> **Background identity verification.** The employee survey (`/?view=employee`) never renders a
-> username/password form. `getVerifiedEmployee()` (`src/lib/identity.ts`) resolves identity in
-> this order: the Cloudflare Access JWT on the request → an existing session → the dev
-> impersonation cookie (admins only, submit-blocked). Only the verified `sub` is used, in
-> memory, to key the participation HMAC — it is never stored alongside responses.
+> **Employee sign-in.** The survey (`/?view=employee`) renders the email + password card
+> (`AuthCard`) whenever there is no session, and offers self-registration to `@almarshad.com`
+> addresses only. `POST /api/auth/login` refuses any other domain for employee accounts (admin
+> logins are unaffected), and `POST /api/auth/register` is gated the same way.
+> `getVerifiedEmployee()` (`src/lib/identity.ts`) resolves identity in this order: the Cloudflare
+> Access JWT on the request → an existing session → the dev impersonation cookie (admins only,
+> submit-blocked). Only the verified identity is used, in memory, to key the participation HMAC —
+> it is never stored alongside responses.
 >
-> The browser-facing copy never describes a person: an unverified request gets a neutral
-> «تعذّر التحقق من أهلية المشاركة» card with a retry action.
->
-> **Employee self-registration was removed.** Employees are provisioned through the corporate
-> directory (or by an admin via `/api/admin/employees`), not by creating accounts in the app.
-> `POST /api/auth/register` and `POST /api/auth/resend-verification` no longer exist.
+> With a mail provider configured, registration emails a one-time link and the account stays
+> locked until it is opened; without one, the account is activated immediately so sign-in never
+> dead-ends. `POST /api/auth/register` and `POST /api/auth/resend-verification` are rate limited
+> per IP.
 
 ---
 
@@ -373,10 +376,12 @@ All API routes are relative: `GET /api/...`.
 | Method | Path | Purpose |
 |---|---|---|
 | GET/POST | `/api/auth/setup` | First-run admin claim (works only while no admin has a password) |
-| POST | `/api/auth/login` | Email + password (admin or employee) → httpOnly session cookie |
+| POST | `/api/auth/login` | Email + password (admin or employee) → httpOnly session cookie. Employee addresses must be `@almarshad.com` |
 | POST | `/api/auth/logout` | Destroy the current session |
 | GET | `/api/auth/me` | Current session (`authenticated`, admin/employee identity) |
-| GET | `/api/auth/verify?token=` | One-time verification link (HTML result page) — legacy tokens only, nothing issues new ones |
+| POST | `/api/auth/register` | Employee self-registration (`@almarshad.com` only, rate limited) |
+| GET | `/api/auth/verify?token=` | One-time verification link (HTML result page) |
+| POST | `/api/auth/resend-verification` | Re-issue the verification link (rate limited) |
 | GET/POST | `/api/admin/employees` | List / create employee accounts (mutations: SUPER_ADMIN) |
 | PATCH/DELETE | `/api/admin/employees/:id` | Reset password / deactivate (SUPER_ADMIN) |
 
@@ -466,7 +471,7 @@ EmployeeApp (employee-app.tsx)
 | `db.ts` | D1 database binding helper (`getDB()`) |
 | `api.ts` | `ok()`, `fail()`, `noStore()`, `apiHandler()` response helpers |
 | `admin-auth.ts` | Admin session via signed cookie (HMAC), SUPER_ADMIN/SURVEY_ADMIN roles, dev bootstrap |
-| `identity.ts` | Dev-mode EmployeeIdentityProvider (cookie-based impersonation) |
+| `identity.ts` | Employee identity resolver (Access JWT → session → dev impersonation) + participation HMAC |
 | `employee-hmac.ts` | HMAC-SHA256 + `newResponseGroupId()` (random UUID) |
 | `audit.ts` | `writeAudit()` — safe audit log writer (no employee data) |
 | `audit-display.ts` | Shared `actionTone()` + `ENTITY_LABELS_AR` (used by audit view + dashboard) |
@@ -654,8 +659,9 @@ In dev (NODE_ENV !== "production"):
 - The HMAC is computed server-side from this cookie value
 - **Blocked on every submit endpoint** (403): an admin must be able to preview the
   survey, but must never be able to cast votes as an arbitrary employee
-- In production this path is unreachable — `getVerifiedEmployee()` resolves the
-  Cloudflare Access JWT first
+- In production this path only succeeds for an authenticated admin — `getVerifiedEmployee()`
+  resolves the Cloudflare Access JWT and the employee session first, and every submit endpoint
+  refuses a `dev` source
 
 ---
 
@@ -663,14 +669,14 @@ In dev (NODE_ENV !== "production"):
 
 1. **Save/resume draft** — `GET/POST /api/employee/draft` returns 501. Persisting in-progress answers server-side would re-couple identity to answer content (architectural decision pending).
 
-2. **Corporate identity behind Cloudflare Access** — `getVerifiedEmployee()`
+2. **Corporate identity behind Cloudflare Access (optional)** — `getVerifiedEmployee()`
    (`src/lib/identity.ts`) accepts a Cloudflare Access JWT when `CF_ACCESS_TEAM_DOMAIN` and
-   `CF_ACCESS_AUD` are configured, and falls back to first-party session / dev impersonation
-   when they are not. Identity is resolved in the background: the survey UI never renders a
-   username/password form and never receives an employee identifier in a response body. The
-   README must say "de-identified" not "100% anonymous" because the identity provider / infra
-   logs may retain data outside the app's control. Enabling Access additionally requires a
-   custom domain on the Worker (`wrangler.toml` currently deploys to `*.workers.dev`).
+   `CF_ACCESS_AUD` are configured, and otherwise falls back to the first-party session created by
+   the email + password sign-in card, then to the admin dev-impersonation cookie. No employee
+   identifier is ever returned in a response body — only its HMAC reaches the participation
+   ledger. The README must say "de-identified" not "100% anonymous" because the identity provider
+   / infra logs may retain data outside the app's control. Enabling Access additionally requires
+   a custom domain on the Worker (`wrangler.toml` currently deploys to `*.workers.dev`).
 
 3. **Campaign comparison export with chart PNG embedded in XLSX** — Not yet implemented (requires server-side chart rendering — complex). The trend view has CSV/XLSX export of the raw data, but not the chart image itself.
 

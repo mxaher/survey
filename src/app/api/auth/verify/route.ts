@@ -7,10 +7,11 @@ export const dynamic = "force-dynamic";
 const LOGIN_URL = "/?view=employee";
 
 /**
- * GET /api/auth/verify?token=… — legacy one-time verification link.
+ * GET /api/auth/verify?token=… — one-time verification link.
  *
- * Nothing issues these tokens any more (employee self-registration was
- * removed); the route stays so outstanding links do not dead-end.
+ * Tokens are issued by `POST /api/auth/register` / `POST /api/auth/
+ * resend-verification` while a mail provider is configured; with no provider
+ * the account is activated at registration and this route sees no traffic.
  *
  * Renders a small self-contained HTML page for every outcome (the recipient
  * is an employee following an email, not an API client). Success flips
