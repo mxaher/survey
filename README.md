@@ -19,13 +19,16 @@ A production-ready, Arabic-first, fully RTL internal web application for running
 3. [Project Architecture](#project-architecture)
 4. [Database Schema](#database-schema)
 5. [Privacy Architecture (Critical)](#privacy-architecture-critical)
-6. [API Reference](#api-reference)
-7. [Frontend Architecture](#frontend-architecture)
-8. [File Map](#file-map)
-9. [Conventions & Patterns](#conventions--patterns)
-10. [Development Workflow](#development-workflow)
-11. [Recurring Cron Job](#recurring-cron-job)
-12. [Known Limitations](#known-limitations)
+6. [Authentication & Accounts](#authentication--accounts)
+7. [API Reference](#api-reference)
+8. [Frontend Architecture](#frontend-architecture)
+9. [File Map](#file-map)
+10. [Conventions & Patterns](#conventions--patterns)
+11. [Development Workflow](#development-workflow)
+12. [Scoring Formulas (spec §5/§8)](#scoring-formulas-spec-58)
+13. [Campaign Lifecycle](#campaign-lifecycle)
+14. [Audit Logging](#audit-logging)
+15. [Known Limitations](#known-limitations)
 
 ---
 
@@ -49,10 +52,12 @@ A production-ready, Arabic-first, fully RTL internal web application for running
 ### Key Dependencies
 
 ```
-next@^16.1.1  react@^19
-@opennextjs/cloudflare  wrangler  @cloudflare/workers-types
+next@^16.1.1  react@^19  typescript@^5
+@opennextjs/cloudflare  wrangler@4  @cloudflare/workers-types
 @tanstack/react-query  zustand  recharts  lucide-react
-next-themes  framer-motion  @dnd-kit/*  xlsx  zod
+next-themes  framer-motion  @dnd-kit/*  xlsx  zod@4
+react-hook-form  @hookform/resolvers  sonner  cmdk  date-fns
+clsx  tailwind-merge  class-variance-authority
 ```
 
 ### Path Alias
@@ -75,15 +80,20 @@ bun install
 npx wrangler d1 create almrshad-survey-db
 # Copy the database_id into wrangler.toml
 
-# 3. Run D1 migrations locally
+# 3. Run D1 migrations locally (schema + seed data in one step)
 bun run db:migrate
+# 0001 creates the schema, 0002/0007 seed the demo campaign,
+# executives and the 36-question approved bank — there is no
+# separate seed command.
 
-# 4. Seed demo data
-bun run db:seed
-
-# 5. Start dev server (port 3000)
+# 4. Start dev server (port 3000)
 bun run dev
 ```
+
+Seeding is **migration-driven and idempotent** (`INSERT OR IGNORE` keyed on
+`Question.code`), so re-running `bun run db:migrate` never duplicates rows.
+Optional demo responses are added afterwards with the scripts listed in
+[Seeding Demo Data](#seeding-demo-data).
 
 ### Cloudflare Workers Deployment
 
@@ -97,7 +107,6 @@ bun run db:migrate:prod
 
 # 3. Set secrets
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
-npx wrangler secret put ADMIN_AUTH_SECRET
 
 # 4. Optional: edge identity (Cloudflare Access)
 npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   # e.g. https://almarshad.cloudflareaccess.com
@@ -119,14 +128,18 @@ bun run deploy
 
 | Script | Purpose |
 |---|---|
-| `bun run dev` | Start dev server on port 3000 (Turbopack) |
+| `bun run dev` | Start dev server on port 3000 (Turbopack, tees to `dev.log`) |
 | `bun run lint` | ESLint check (must be 0 errors) |
-| `bun test tests` | Bun test suite (migrations, scoring engine, report endpoints, exports) |
-| `bun run build` | Production build |
+| `bun run test` | Bun test suite (`bun test tests/` — migrations, scoring engine, report endpoints, exports) |
+| `bun run build` | Production build (`opennextjs-cloudflare build`) |
 | `bun run db:migrate` | Run D1 migrations locally |
 | `bun run db:migrate:prod` | Run D1 migrations against production |
-| `bun run db:seed` | Seed demo data |
+| `bun run db:local` | Run `wrangler dev` (local Workers runtime) |
 | `bun run deploy` | Build and deploy to Cloudflare Workers |
+
+> There is **no `db:seed` script** — the demo campaign, executives and the
+> approved question bank are seeded by migrations `0002_seed.sql` and
+> `0007_question_bank_seed.sql`.
 
 ### Environment Variables
 
@@ -135,11 +148,10 @@ Secrets are managed via Cloudflare Workers bindings:
 ```bash
 # Local development: create .dev.vars (never committed)
 cp .dev.vars.example .dev.vars
-# Fill in EMPLOYEE_HMAC_SECRET and ADMIN_AUTH_SECRET
+# Fill in EMPLOYEE_HMAC_SECRET (the only strictly required secret)
 
 # Production: set via Wrangler secrets
 npx wrangler secret put EMPLOYEE_HMAC_SECRET
-npx wrangler secret put ADMIN_AUTH_SECRET
 npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 ```
 
@@ -153,19 +165,19 @@ npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 | `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` |
 | `EMAIL_FROM_NAME` | var | Optional sender display name (defaults to `استبيان بيئة العمل`) |
 
-> **Employee sign-in.** The survey (`/?view=employee`) renders the email + password card
-> (`AuthCard`) whenever there is no session, and offers self-registration to `@almarshad.com`
-> addresses only. `POST /api/auth/login` refuses any other domain for employee accounts (admin
-> logins are unaffected), and `POST /api/auth/register` is gated the same way.
-> `getVerifiedEmployee()` (`src/lib/identity.ts`) resolves identity in this order: the Cloudflare
-> Access JWT on the request → an existing session → the dev impersonation cookie (admins only,
-> submit-blocked). Only the verified identity is used, in memory, to key the participation HMAC —
-> it is never stored alongside responses.
->
-> With a mail provider configured, registration emails a one-time link and the account stays
-> locked until it is opened; without one, the account is activated immediately so sign-in never
-> dead-ends. `POST /api/auth/register` and `POST /api/auth/resend-verification` are rate limited
-> per IP.
+> **No admin signing secret.** `ADMIN_AUTH_SECRET` used to sign the admin cookie;
+> sessions are now opaque random tokens stored in the `Session` table
+> (`src/lib/session.ts`), so nothing in the app reads that variable any more.
+> `.dev.vars.example` still lists it for backwards compatibility — setting it is
+> harmless but unnecessary. All secrets are read through `readWorkerEnv()`
+> (`src/lib/env.ts`), which prefers the Worker env binding over `process.env`.
+
+> **Employee sign-in.** The survey (`/?view=employee`) renders the `AuthCard`
+> (email + password, `@almarshad.com` addresses only) whenever there is no session, and offers
+> self-registration from the same card. Only the verified identity is used, in memory, to key
+> the participation HMAC — it is never stored alongside responses.
+> See [Authentication & Accounts](#authentication--accounts) for the full resolution order,
+> rate limits and email-verification behaviour.
 
 ---
 
@@ -185,12 +197,14 @@ The user can only see **one route** (`/`). Navigation is via URL search params:
 /?view=admin&tab=questions                   → Question library
 /?view=admin&tab=questions&sub=editor&id=X   → Question editor (id=new for create)
 /?view=admin&tab=executives                  → Executives registry
+/?view=admin&tab=executives&sub=editor&id=X  → Executive editor (id=new for create)
 /?view=admin&tab=reports                     → Reports landing (campaign list)
 /?view=admin&tab=reports&sub=campaign&id=X   → Campaign report
 /?view=admin&tab=reports&sub=executive&id=X&execId=Y → Executive detailed report
 /?view=admin&tab=reports&sub=trend           → Cross-campaign trend comparison
 /?view=admin&tab=audit                        → Audit log
 /?view=admin&tab=settings                     → System settings
+/?view=admin&tab=employees                    → Employee account management
 /?view=admin&tab=users                        → Admin user management (SUPER_ADMIN only)
 ```
 
@@ -207,18 +221,21 @@ src/app/page.tsx
 ```
 AdminApp (admin-app.tsx)
   ├── Header (sticky): logo + quick-search (⌘K) + theme toggle + notifications bell + user profile dropdown
-  ├── Sidebar (nav): dashboard / campaigns / questions / executives / reports / audit / settings / users
+  ├── Sidebar (nav): dashboard / campaigns / questions / executives / reports / audit /
+  │                  settings / employees / users (SUPER_ADMIN only)
   └── Main content: dynamically imported leaf views via next/dynamic
       └── <CommandPalette /> (Cmd+K global search)
 ```
+
+`?tab=users` redirects non-SUPER_ADMIN sessions back to the dashboard.
 
 ---
 
 ## Database Schema
 
-**File:** `migrations/0001_init.sql` (Cloudflare D1 / SQLite)
+**Files:** `migrations/0001_init.sql` … `migrations/0008_privacy_hardening.sql` (Cloudflare D1 / SQLite)
 
-### Tables
+### Tables (16)
 
 | Table | Purpose |
 |---|---|
@@ -232,7 +249,10 @@ AdminApp (admin-app.tsx)
 | `CampaignQuestionOptionSnapshot` | **Immutable** option snapshot frozen at activation |
 | `ParticipationLedger` | **PROTECTED identity layer** — HMAC + participation type + scope |
 | `Response` | **Anonymous response layer** — no employee identifier of any kind |
-| `AdminUser` | Admin accounts (SUPER_ADMIN / SURVEY_ADMIN) |
+| `AdminUser` | Admin accounts (SUPER_ADMIN / SURVEY_ADMIN) + `passwordHash`/`salt` (PBKDF2) |
+| `EmployeeUser` | Employee accounts (`@almarshad.com` only) + email-verification columns |
+| `Session` | Opaque server-side session tokens (admin **or** employee, httpOnly cookie) |
+| `RateLimit` | Fixed-window counters for login/registration rate limiting |
 | `AuditLog` | Admin action audit trail (never contains employee data) |
 | `SystemSetting` | Key/value system config (privacy notice, intro copy, eligible count) |
 
@@ -246,6 +266,22 @@ UNIQUE(campaignId, employeeHmac, participationType, scopeKey)
 -- Question code uniqueness:
 code TEXT NOT NULL UNIQUE
 ```
+
+### Migrations
+
+| File | Purpose |
+|---|---|
+| `0001_init.sql` | Base schema (13 tables) |
+| `0002_seed.sql` | Idempotent demo seed (executives, settings, demo campaign) |
+| `0003_activate.sql` | Sets the demo campaign's start/end window |
+| `0004_auth.sql` | PBKDF2 passwords, `EmployeeUser`, `Session`, `RateLimit` |
+| `0005_registration.sql` | Employee self-registration + email-verification columns |
+| `0006_scoring_schema.sql` | category/scale/scope + sentiment flags + reporting indexes |
+| `0007_question_bank_seed.sql` | 36 approved questions + 228 options, camp-001 rewired (threshold 7) |
+| `0008_privacy_hardening.sql` | Drops `Response.submittedAt`, refreshes stale privacy notices |
+
+Migrations run in lexical order — the same order the test suite applies them
+(`tests/helpers/d1.ts`).
 
 ---
 
@@ -262,7 +298,8 @@ This is the **most important** section. The spec mandates architectural anonymit
 - **NEVER** joined to `responses`
 
 **B. Response Layer (`responses`):**
-- Knows ONLY: which campaign, which executive (if applicable), which question snapshot, which selected value/score, when
+- Knows ONLY: which campaign, which executive (if applicable), which question snapshot, which selected value/score
+- Carries **no timestamp** — `Response.submittedAt` was dropped in migration `0008` so rows cannot be joined back to the ledger by time
 - Linked via `response_group_id` — a random UUID generated at submission time, **not** derived from employee identity
 - Contains **zero** employee identifiers: no name, email, HMAC, IP, user-agent, device fingerprint
 
@@ -275,6 +312,15 @@ employee_hmac = HMAC_SHA256(EMPLOYEE_HMAC_SECRET, normalized_employee_identifier
 - Secret lives only in server-side env (`src/lib/employee-hmac.ts`)
 - HMAC used **only** in `participation_ledger` WHERE clauses
 - **NEVER** returned in any API response, **NEVER** logged
+
+### Timestamp-Link Removal (migration `0008`)
+
+Submit handlers used to bind one `now` into both the `ParticipationLedger` row and every
+`Response` row, so `Response.submittedAt` was byte-identical to the ledger's — which made
+`JOIN Response ON campaignId = … AND submittedAt = …` enough to recover
+`employeeHmac → responseGroupId → all answers`. No code reads `Response.submittedAt`
+(reporting, scoring, exports and trend queries never reference it), so migration `0008`
+drops the column outright, removing the link from existing rows as well.
 
 ### Immutable Question Snapshots
 
@@ -300,11 +346,44 @@ At campaign activation (`POST /api/admin/campaigns/:id/activate`):
 
 ---
 
+## Authentication & Accounts
+
+| Principal | How it signs in | Where it lives |
+|---|---|---|
+| **Admin** (`/?view=admin`) | Email + password → `POST /api/auth/login` | `AdminUser` (PBKDF2-SHA256, 100k iterations, per-row salt) |
+| **Employee** (`/?view=employee`) | Cloudflare Access JWT → employee session → dev cookie | `EmployeeUser` (`@almarshad.com` only) |
+| **First run** | `GET/POST /api/auth/setup` | Works only while no admin has a password yet |
+
+- **Sessions are opaque**, not JWTs: `src/lib/session.ts` stores a random token row in the
+  `Session` table and hands the browser only an httpOnly `session_token` cookie
+  (7-day TTL). One row serves either `adminUserId` or `employeeUserId`, never both.
+- **Roles:** `SUPER_ADMIN` (everything, including admin user management) and
+  `SURVEY_ADMIN` (campaigns/questions/executives/reports/audit/settings — cannot
+  identify respondents).
+- **Identity resolution** — `getVerifiedEmployee()` (`src/lib/identity.ts`) order:
+  Cloudflare Access JWT (`Cf-Access-JWT-Assertion`) → existing session → admin
+  dev-impersonation cookie. Only the verified identity is used, in memory, to key the
+  participation HMAC — never stored alongside responses.
+- **Rate limiting** — `src/lib/rate-limit.ts` is a D1-backed fixed-window limiter
+  (10 attempts / 60s per key) applied to login and to registration / resend-verification.
+  It fails open: without a database the protected action can't succeed anyway.
+- **Email verification** — with `RESEND_API_KEY` (or Mailjet) configured,
+  `POST /api/auth/register` emails a one-time link and the account stays locked until
+  opened; without a provider the account activates immediately so sign-in never
+  dead-ends.
+- **Password hashing** — `src/lib/auth.ts` (PBKDF2-SHA256 via Web Crypto, edge-safe).
+
+---
+
 ## API Reference
 
 ### Base URL
 
-All API routes are relative: `GET /api/...`.
+All API routes are relative: `GET /api/...`. There are **61 route handlers** under
+`src/app/api/` (plus a `GET /api` scaffold that returns a hello-world JSON).
+
+Every JSON endpoint answers `{ ok, data }` / `{ ok, error }`; every report, export
+and employee endpoint also sends `Cache-Control: no-store`.
 
 ### Admin Auth
 
@@ -417,8 +496,8 @@ CSV/XLSX endpoints return raw file bodies with appropriate `Content-Type`.
 
 ```
 EmployeeApp (employee-app.tsx)
-  ├── ImpersonationBanner (dev-mode 401 prompt or active-identity chip)
-  └── phase: loading → no-campaign → intro → wizard → success
+  ├── Sticky header (logo + title + "للإدارة" link) + ImpersonationBanner
+  └── phase: loading → unauthorized (AuthCard) → error → no-campaign → intro → wizard → success
       └── SurveyWizard (survey-wizard.tsx)
           ├── Step 1: بيئة العمل (environment questions, 5-point agreement scale)
           ├── Step 2: تقييم القيادات (executive dropdown → leadership questions, 5(+1) frequency scale)
@@ -426,9 +505,13 @@ EmployeeApp (employee-app.tsx)
           └── Step 4: المراجعة والإرسال (review + confirm checkbox + submit)
 ```
 
-- Wizard state: Zustand store (`wizard-store.ts`) persisted to `sessionStorage` (privacy — clears on tab close)
+- On **401** the shell renders `AuthCard` (`src/components/auth/auth-card.tsx`) —
+  email + password sign-in, with self-registration offered only on the employee card.
+  The admin shell renders the same component full-screen (including first-run `setup`).
+- Wizard state: Zustand store (`wizard-store.ts`) persisted to `sessionStorage` (privacy — clears on tab close); the current `step` is intentionally **not** persisted — it is re-derived from `participation-status` on every mount, so a refresh resumes at the right step.
 - Step navigation: ArrowLeft = next, ArrowRight = back (RTL) — only when not focused in an input
 - Progress indicator with completed/active/upcoming states
+- Each executive evaluation uses transient local React state (resets when the exec changes).
 
 ### Admin Views
 
@@ -449,6 +532,7 @@ EmployeeApp (employee-app.tsx)
 | Trend report | `trend-report-view.tsx` | Comparison table + dimension line chart + participation rate chart + CSV/XLSX export |
 | Audit log | `audit-view.tsx` | Paginated table with semantic action badges |
 | Settings | `settings-view.tsx` | Inline editable system settings |
+| Employee accounts | `employees-view.tsx` | Employee table with create / reset password / deactivate (SUPER_ADMIN) |
 | Users | `users-view.tsx` | Admin user table with avatars + last-login + role badges |
 
 ### Shared Components
@@ -468,10 +552,16 @@ EmployeeApp (employee-app.tsx)
 
 | File | Purpose |
 |---|---|
-| `db.ts` | D1 database binding helper (`getDB()`) |
+| `db.ts` | D1 database binding helper (`getDB()` from the Cloudflare context) |
 | `api.ts` | `ok()`, `fail()`, `noStore()`, `apiHandler()` response helpers |
-| `admin-auth.ts` | Admin session via signed cookie (HMAC), SUPER_ADMIN/SURVEY_ADMIN roles, dev bootstrap |
+| `env.ts` | `readWorkerEnv()` — Worker env binding first, `process.env` fallback |
+| `admin-auth.ts` | `getAdminUser()` + login/logout, SUPER_ADMIN / SURVEY_ADMIN roles (no dev bootstrap) |
+| `session.ts` | Opaque DB-backed sessions (`Session` table), httpOnly cookie, 7-day TTL |
+| `auth.ts` | `hashPassword()` / `verifyPassword()` — PBKDF2-SHA256, 100k iterations |
+| `rate-limit.ts` | D1 fixed-window limiter (10/60s), fails open |
+| `email.ts` | Resend → Mailjet transport for verification links + admin notices |
 | `identity.ts` | Employee identity resolver (Access JWT → session → dev impersonation) + participation HMAC |
+| `identity-provider.ts` | Access JWT parsing, `ParticipantSource` types, subject handling |
 | `employee-hmac.ts` | HMAC-SHA256 + `newResponseGroupId()` (random UUID) |
 | `audit.ts` | `writeAudit()` — safe audit log writer (no employee data) |
 | `audit-display.ts` | Shared `actionTone()` + `ENTITY_LABELS_AR` (used by audit view + dashboard) |
@@ -492,44 +582,56 @@ EmployeeApp (employee-app.tsx)
 survey/
 ├── .dev.vars.example               # Template for local dev secrets
 ├── package.json                    # Scripts + deps
-├── wrangler.toml                   # Cloudflare Workers + D1 config
+├── wrangler.toml                   # Cloudflare Workers + D1 config (DB binding, assets)
 ├── open-next.config.ts             # OpenNext.js Cloudflare adapter
-├── migrations/
+├── eslint.config.mjs               # ESLint 9 (next + tailwind-rtl)
+├── components.json                 # shadcn/ui config
+├── Almarhsad Holding.png           # Source logo (design reference)
+├── public/
+│   ├── almarshad-logo.png          # App logo (header)
+│   ├── almarshad-mark.png          # Favicon / app mark
+│   ├── logo.svg                    # Vector mark
+│   └── robots.txt
+├── migrations/                     # 8 files, applied in lexical order
 │   ├── 0001_init.sql               # D1 schema (13 tables)
-│   ├── 0002_seed.sql               # Legacy seed (demo campaign, questions, executives)
-│   ├── 0003_*.sql–0005_*.sql       # Indexes, hardening, registration
+│   ├── 0002_seed.sql               # Idempotent demo seed
+│   ├── 0003_activate.sql           # Demo campaign window
+│   ├── 0004_auth.sql               # PBKDF2 + EmployeeUser + Session + RateLimit
+│   ├── 0005_registration.sql       # Self-registration + verification columns
 │   ├── 0006_scoring_schema.sql     # category/scale/scope + sentiment flags + indexes
-│   └── 0007_question_bank_seed.sql # 36 approved questions + 228 options, camp-001 rewired (threshold 7)
+│   ├── 0007_question_bank_seed.sql # 36 approved questions + 228 options, camp-001 rewired (threshold 7)
+│   └── 0008_privacy_hardening.sql  # Drops Response.submittedAt, refreshes privacy notices
 ├── tests/
-│   ├── helpers/d1.ts               # In-memory D1 (bun:sqlite) + apiRequest helpers
+│   ├── helpers/d1.ts               # In-memory D1 (bun:sqlite) + migration loader
 │   ├── support/                    # bun:test / bun:sqlite ambient types
-│   ├── unit/scoring.test.ts        # Pure scoring engine assertions
-│   └── integration/                # migrations + report/summary/export endpoints
+│   ├── unit/scoring.test.ts        # Scoring engine, classification, gates, validation
+│   └── integration/                # migrations.test.ts + reports.test.ts (4 report APIs, 6 exports)
 ├── scripts/                        # Dev utilities (run with `bun run scripts/X.ts`)
-│   ├── promote-admin.ts          # Promote dev admin to SUPER_ADMIN
-│   ├── seed-responses.ts         # Seed executive evaluations
-│   ├── seed-env-future.ts        # Seed environment + future responses
-│   ├── set-dates.ts              # Set demo campaign dates
-│   ├── set-eligible-count.ts     # Set eligible_employees_count SystemSetting
-│   ├── cleanup-test-campaign.ts  # Delete test campaigns
-│   ├── count-evals.ts            # Count evaluations per executive
-│   └── get-qids.ts               # Get question IDs
+│   ├── promote-admin.ts            # Promote dev admin to SUPER_ADMIN
+│   ├── seed-responses.ts           # Seed executive evaluations
+│   ├── seed-env-future.ts          # Seed environment + future responses
+│   ├── set-dates.ts                # Set demo campaign dates
+│   ├── set-eligible-count.ts       # Set eligible_employees_count SystemSetting
+│   ├── cleanup-test-campaign.ts    # Delete test campaigns
+│   ├── count-evals.ts              # Count evaluations per executive
+│   └── get-qids.ts                 # Get question IDs
 ├── src/
 │   ├── app/
-│   │   ├── layout.tsx            # Root layout (RTL, Tajawal font, ThemeProvider, Toaster)
-│   │   ├── page.tsx              # Single route — ?view= switch
-│   │   ├── globals.css           # Tailwind + Almarshad palette (navy/charcoal/gold) + dark mode + print CSS
-│   │   └── api/                  # ~45 route handlers (see API Reference above)
+│   │   ├── layout.tsx              # Root layout (RTL, Tajawal font, ThemeProvider, Toaster)
+│   │   ├── page.tsx                # Single route — ?view= switch
+│   │   ├── globals.css             # Tailwind + Almarshad palette (navy/charcoal/gold) + dark mode + print CSS
+│   │   └── api/                    # 61 route handlers (see API Reference above)
 │   ├── components/
-│   │   ├── providers.tsx         # ThemeProvider + QueryClientProvider
-│   │   ├── ui/                   # shadcn/ui components (60+ files, pre-installed)
-│   │   ├── shared/               # 8 shared helpers (see Shared Components above)
-│   │   ├── employee/             # 11 employee survey files
-│   │   └── admin/                 # 18 admin view files + command-palette
-│   ├── lib/                      # 12 lib helpers (see Lib Helpers above)
-│   └── hooks/                    # use-toast.ts, use-mobile.ts
-├── worklog.md                    # Detailed development history (Tasks 1–14)
-└── dev.log                       # Next.js dev server log
+│   │   ├── providers.tsx           # ThemeProvider + QueryClientProvider
+│   │   ├── ui/                     # 48 shadcn/ui components (pre-installed)
+│   │   ├── shared/                 # 7 shared helpers (see Shared Components above)
+│   │   ├── auth/auth-card.tsx      # Sign-in / first-run setup / self-registration
+│   │   ├── employee/               # 11 employee survey files
+│   │   └── admin/                  # 20 files: shell + command palette + 18 leaf views
+│   ├── lib/                        # 21 helpers (see Lib Helpers above)
+│   └── hooks/                      # use-toast.ts, use-mobile.ts
+├── worklog.md                      # Detailed development history
+└── dev.log                         # Next.js dev server log
 ```
 
 ---
@@ -563,18 +665,20 @@ export const GET = apiHandler(async (request: NextRequest, ctx) => {
   const admin = await getAdminUser();
   if (!admin) return fail(MESSAGES.unauthorized, 401);
   // ... Zod validation ...
-  // ... db.$transaction for atomic ops ...
+  // ... db.batch([...]) for atomic multi-statement ops ...
   // ... writeAudit for mutations ...
   return ok({ ... });
 });
 ```
 
 - NO `'use server'` directive (these are route handlers, not server actions)
+- Raw D1 through `getDB()` — no ORM; SQL is written out with `db.prepare().bind()`
 - Every admin endpoint: `getAdminUser()` first → 401 if null
 - Every mutation: `writeAudit()` with admin ID + action + entity type
 - Every employee/submission endpoint: `noStore()` (Cache-Control: no-store)
 - Zod for input validation
-- `db.$transaction` for multi-step atomic ops (especially activation, submissions)
+- `db.batch([...])` for multi-statement atomic ops (D1 batches run in one implicit
+  transaction — activation, submissions, reorders, copies all rely on it)
 
 ### Dynamic Imports
 
@@ -625,17 +729,28 @@ Stage Summary:
 - <key results>
 ```
 
-### Seeding Demo Data
+### Seeding Demo Data <a id="seeding-demo-data"></a>
+
+Schema + base seed come from migrations alone:
 
 ```bash
-bun run db:migrate                  # Applies 0001–0007 (0007 seeds the approved question bank)
-bun run db:seed                    # Initial seed (questions, execs, demo campaign)
-bun run scripts/set-dates.ts       # Set demo campaign dates (for activation)
-bun run scripts/seed-responses.ts  # Seed executive evaluations (6 employees × 5 execs)
-bun run scripts/seed-env-future.ts # Seed environment + future responses
-bun run scripts/set-eligible-count.ts # Set eligible_employees_count = 50
-bun run scripts/promote-admin.ts   # Promote dev admin to SUPER_ADMIN
+bun run db:migrate   # Applies 0001–0008 (0002 + 0007 seed the demo campaign + question bank)
 ```
+
+Optional demo-response scripts exist under `scripts/`, but **they are currently
+broken** — they still import a Prisma client (`import { db } from "../src/lib/db"`)
+that was removed when the project migrated to raw D1:
+
+```bash
+bun run scripts/set-dates.ts           # Set demo campaign dates (for activation)
+bun run scripts/seed-responses.ts      # Seed executive evaluations (6 employees × 5 execs)
+bun run scripts/seed-env-future.ts     # Seed environment + future responses
+bun run scripts/set-eligible-count.ts  # Set eligible_employees_count = 50
+bun run scripts/promote-admin.ts       # Promote dev admin to SUPER_ADMIN
+```
+
+Until they are ported to `getDB()` + `prepare().bind()`, use the admin UI (or SQL)
+for these steps — see [Known Limitations](#known-limitations) #7.
 
 Migration `0007_question_bank_seed.sql` is idempotent (keyed on `Question.code`, `INSERT OR
 IGNORE`): re-running never duplicates rows. Its 36-row question insert is deliberately split
@@ -644,47 +759,29 @@ column-terms (`too many terms in compound SELECT`).
 
 ### Activating the Demo Campaign
 
-1. `bun run scripts/set-dates.ts` (sets startsAt = now, endsAt = +30 days)
+1. Make sure the campaign window covers today's date — migration `0003_activate.sql`
+   sets `camp-001` to `2026-09-24 → 2026-12-31`. (`scripts/set-dates.ts` would do this
+   dynamically but is currently broken — see limitation #7.)
 2. Open `/?view=admin&tab=campaigns`
 3. Click "إجراءات" → "فتح الحملة (تفعيل)"
-4. Confirm the activation dialog
+4. Confirm the activation dialog (readiness must pass all 9 checks first)
 5. The campaign is now active — employee view will show the survey
 
 ### Dev-Mode Employee Impersonation
 
-In dev (NODE_ENV !== "production"):
-- Admin dashboard has a "وضع التطوير" panel with an employee picker
-- Selecting an employee + clicking "تطبيق" sets a cookie (`almrshd_dev_employee`)
-- The employee view then uses this cookie to identify the "current employee"
-- The HMAC is computed server-side from this cookie value
-- **Blocked on every submit endpoint** (403): an admin must be able to preview the
-  survey, but must never be able to cast votes as an arbitrary employee
-- In production this path only succeeds for an authenticated admin — `getVerifiedEmployee()`
-  resolves the Cloudflare Access JWT and the employee session first, and every submit endpoint
-  refuses a `dev` source
+Whenever Cloudflare Access is **not** configured (local dev, staging), the admin
+dashboard shows a "وضع التطوير" panel with an employee picker:
 
----
-
-## Known Limitations
-
-1. **Save/resume draft** — `GET/POST /api/employee/draft` returns 501. Persisting in-progress answers server-side would re-couple identity to answer content (architectural decision pending).
-
-2. **Corporate identity behind Cloudflare Access (optional)** — `getVerifiedEmployee()`
-   (`src/lib/identity.ts`) accepts a Cloudflare Access JWT when `CF_ACCESS_TEAM_DOMAIN` and
-   `CF_ACCESS_AUD` are configured, and otherwise falls back to the first-party session created by
-   the email + password sign-in card, then to the admin dev-impersonation cookie. No employee
-   identifier is ever returned in a response body — only its HMAC reaches the participation
-   ledger. The README must say "de-identified" not "100% anonymous" because the identity provider
-   / infra logs may retain data outside the app's control. Enabling Access additionally requires
-   a custom domain on the Worker (`wrangler.toml` currently deploys to `*.workers.dev`).
-
-3. **Campaign comparison export with chart PNG embedded in XLSX** — Not yet implemented (requires server-side chart rendering — complex). The trend view has CSV/XLSX export of the raw data, but not the chart image itself.
-
-4. **Eligible employee count** — The participation rate metric depends on a manually-set `SystemSetting` (`eligible_employees_count`), not an automated HR feed.
-
-5. **Per-question threshold suppression** — Applied to all 4 report endpoints (environment, future, executive, summary) and to every export. The UI shows a Lock icon + "أقل من حد الإخفاء" message for suppressed questions.
-
-6. **Print CSS** — Comprehensive `@media print` block exists in `globals.css`, but some chart-heavy views may not print perfectly (Recharts SVGs can overflow on small pages).
+- Admin-only (`GET/POST /api/admin/dev-impersonate` requires `getAdminUser()`)
+- Selecting an employee + clicking "تطبيق" sets a cookie (`almrshd_dev_employee`);
+  "مسح" clears it
+- The employee view uses this cookie as the identity source, and the HMAC is
+  computed server-side from it
+- **Blocked on every submit endpoint** (403, `MESSAGES.previewBanner`): an admin must be
+  able to preview the survey, but must never cast votes as an arbitrary employee.
+  `environment/submit`, `future/submit` and `evaluations/submit` all refuse
+  `employee.source === "dev"` — there is no environment flag that disables this guard
+- The roster itself can be replaced via `action: "setRoster"`
 
 ---
 
@@ -744,9 +841,56 @@ await writeAudit({
 });
 ```
 
-Actions include: `campaign.create/edit/activate/close/archive/copy`, `question.create/edit/delete/activate/deactivate`, `executive.create/edit/delete/activate/deactivate`, `campaign_question.assign/remove/reorder`, `campaign_executive.assign/remove/reorder`, `report.export`, `settings.update`, `admin_user.create`.
+Actions written today (`entity.action` format):
+
+| Entity | Actions |
+|---|---|
+| `admin` | `setup` |
+| `admin_user` | `create`, `update`, `deactivate` |
+| `campaign` | `create`, `update`, `delete`, `schedule`, `activate`, `close`, `archive`, `copy` |
+| `campaign_question` | `assign`, `update`, `remove`, `reorder` |
+| `campaign_executive` | `assign`, `update`, `remove`, `reorder`, `disable_active` |
+| `question` | `create`, `update`, `delete`, `activate`, `deactivate` |
+| `executive` | `create`, `update`, `delete`, `delete_refused`, `activate`, `deactivate` |
+| `employee` | `create`, `update`, `deactivate`, `register` |
+| `report` | `export` |
+| `settings` | `update`, `delete` |
 
 The audit log table is viewable at `/?view=admin&tab=audit` with pagination + filters (campaign, action, entityType). The dashboard's "آخر النشاطات" widget shows the last 5 entries.
+
+---
+
+## Known Limitations
+
+1. **Save/resume draft** — `GET/POST /api/employee/draft` returns 501. Persisting in-progress answers server-side would re-couple identity to answer content (architectural decision pending).
+
+2. **Corporate identity behind Cloudflare Access (optional)** — `getVerifiedEmployee()`
+   (`src/lib/identity.ts`) accepts a Cloudflare Access JWT when `CF_ACCESS_TEAM_DOMAIN` and
+   `CF_ACCESS_AUD` are configured, and otherwise falls back to the first-party session created by
+   the email + password sign-in card, then to the admin dev-impersonation cookie. No employee
+   identifier is ever returned in a response body — only its HMAC reaches the participation
+   ledger. The README must say "de-identified" not "100% anonymous" because the identity provider
+   / infra logs may retain data outside the app's control. Enabling Access additionally requires
+   a custom domain on the Worker (`wrangler.toml` currently deploys to `*.workers.dev`).
+
+3. **Campaign comparison export with chart PNG embedded in XLSX** — Not yet implemented (requires server-side chart rendering — complex). The trend view has CSV/XLSX export of the raw data, but not the chart image itself.
+
+4. **Eligible employee count** — The participation rate metric depends on a manually-set `SystemSetting` (`eligible_employees_count`), not an automated HR feed.
+
+5. **Per-question threshold suppression** — Applied to all 4 report endpoints (environment, future, executive, summary) and to every export. The UI shows a Lock icon + "أقل من حد الإخفاء" message for suppressed questions.
+
+6. **Print CSS** — Comprehensive `@media print` block exists in `globals.css`, but some chart-heavy views may not print perfectly (Recharts SVGs can overflow on small pages).
+
+7. **Dev scripts are broken after the Prisma → D1 migration** — all 8 files in `scripts/`
+   still do `import { db } from "../src/lib/db"`, but that module now only exports
+   `getDB()` (a per-request Cloudflare binding). Running any of them fails with
+   `SyntaxError: Export named 'db' not found`. They need porting to
+   `getDB()` + `prepare().bind()` + `db.batch()`; until then, seed/adjust demo data
+   through the admin UI or direct SQL.
+
+8. **Leftover files** — `db/custom.db` (the old Prisma SQLite database) and
+   `tailwind.config.ts` / `tsconfig.tsbuildinfo` are inert leftovers; nothing reads
+   them at runtime. `GET /api` is a scaffold hello-world endpoint.
 
 ---
 
