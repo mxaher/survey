@@ -254,11 +254,17 @@ function groupResponsesBySnapshot(
   return map;
 }
 
+/**
+ * Reporting category of a question. Questions are allowed to carry no
+ * category at all (the bank is question-level): such questions are reported
+ * individually and never rolled up into a dimension.
+ */
 function categoryOf(snap: SnapshotRow): {
   categoryCode: string;
   categoryAr: string;
-} {
-  const code = snap.categoryCode ?? snap.dimension ?? "uncategorized";
+} | null {
+  const code = snap.categoryCode ?? snap.dimension;
+  if (!code) return null;
   const label = snap.categoryAr ?? CATEGORY_LABEL_AR[code] ?? code;
   return { categoryCode: code, categoryAr: label };
 }
@@ -339,7 +345,9 @@ function rollupCategories(
 
   for (const q of questions) {
     if (q.suppressed) continue;
-    const { categoryCode, categoryAr } = categoryOf(q.snapshot);
+    const cat = categoryOf(q.snapshot);
+    if (!cat) continue;
+    const { categoryCode, categoryAr } = cat;
     let bucket = buckets.get(categoryCode);
     if (!bucket) {
       bucket = { categoryAr, dimension: q.snapshot.dimension, metrics: [], questionCount: 0 };
@@ -520,13 +528,13 @@ export async function buildExecutiveReport(
   const questions = computeScoredQuestions(snapshots, bySnapshot, optionSets, threshold);
 
   const questionResults = questions.map((q) => {
-    const { categoryCode, categoryAr } = categoryOf(q.snapshot);
+    const cat = categoryOf(q.snapshot);
     const set = optionSets.get(q.snapshot.id);
     return {
       questionCode: q.snapshot.questionCode,
       questionAr: q.snapshot.questionAr,
-      categoryCode,
-      categoryAr,
+      categoryCode: cat?.categoryCode ?? null,
+      categoryAr: cat?.categoryAr ?? null,
       questionType: q.snapshot.questionType,
       respondedCount: q.rows.length,
       reportAvailable: !q.suppressed,
@@ -718,13 +726,13 @@ export async function buildEnvironmentReport(
   const questions = computeScoredQuestions(snapshots, bySnapshot, optionSets, threshold);
 
   const questionResults = questions.map((q) => {
-    const { categoryCode, categoryAr } = categoryOf(q.snapshot);
+    const cat = categoryOf(q.snapshot);
     const set = optionSets.get(q.snapshot.id);
     return {
       questionCode: q.snapshot.questionCode,
       questionAr: q.snapshot.questionAr,
-      categoryCode,
-      categoryAr,
+      categoryCode: cat?.categoryCode ?? null,
+      categoryAr: cat?.categoryAr ?? null,
       questionType: q.snapshot.questionType,
       respondedCount: q.rows.length,
       reportAvailable: !q.suppressed,
@@ -881,7 +889,7 @@ export async function buildFutureReport(db: D1Like, campaignId: string) {
     const counts = countsBySnapshot.get(snapshot.id) ?? new Map<string, number>();
     const totalSelections = Array.from(counts.values()).reduce((a, b) => a + b, 0);
     const suppressed = perQuestionSuppressed(totalSelections, threshold);
-    const { categoryCode, categoryAr } = categoryOf(snapshot);
+    const cat = categoryOf(snapshot);
     const isMulti = snapshot.questionType === "multi_choice";
 
     const options = buildSelectionReport(
@@ -910,8 +918,8 @@ export async function buildFutureReport(db: D1Like, campaignId: string) {
       questionCode: snapshot.questionCode,
       questionAr: snapshot.questionAr,
       questionType: snapshot.questionType,
-      categoryCode,
-      categoryAr,
+      categoryCode: cat?.categoryCode ?? null,
+      categoryAr: cat?.categoryAr ?? null,
       uniqueRespondents: distinctSubmitters,
       totalSelections,
       options,
