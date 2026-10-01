@@ -41,6 +41,11 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ActionButton } from "@/components/shared/action-button";
 import {
+  ReadinessIssueList,
+  type ReadinessIssue,
+} from "@/components/admin/readiness-issue-list";
+import type { ReadinessTarget } from "@/lib/readiness-targets";
+import {
   Card,
   CardContent,
   CardDescription,
@@ -101,8 +106,10 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 export function CampaignDetailHeader({
   campaignId,
+  onResolveIssue,
 }: {
   campaignId: string;
+  onResolveIssue?: (target: ReadinessTarget) => void;
 }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -276,6 +283,7 @@ export function CampaignDetailHeader({
                   <ActivateButton
                     campaignId={campaign.id}
                     onActivated={invalidateAll}
+                    onResolveIssue={onResolveIssue}
                   />
                 )}
 
@@ -381,14 +389,14 @@ function DetailItem({
 function ActivateButton({
   campaignId,
   onActivated,
+  onResolveIssue,
 }: {
   campaignId: string;
   onActivated: () => void;
+  onResolveIssue?: (target: ReadinessTarget) => void;
 }) {
   const { toast } = useToast();
-  const [issues, setIssues] = useState<
-    { key: string; messageAr: string }[] | null
-  >(null);
+  const [issues, setIssues] = useState<ReadinessIssue[] | null>(null);
   const [pending, setPending] = useState(false);
 
   const handleActivate = async () => {
@@ -468,17 +476,18 @@ function ActivateButton({
               إعادة المحاولة:
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <ul className="max-h-72 overflow-y-auto space-y-2 scroll-rtl pe-1">
-            {issues?.map((iss) => (
-              <li
-                key={iss.key}
-                className="flex gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm"
-              >
-                <span className="text-destructive" aria-hidden="true">•</span>
-                <span className="text-foreground">{iss.messageAr}</span>
-              </li>
-            ))}
-          </ul>
+          <ReadinessIssueList
+            issues={issues ?? []}
+            variant="dialog"
+            onResolve={
+              onResolveIssue
+                ? (target) => {
+                    setIssues(null);
+                    onResolveIssue(target);
+                  }
+                : undefined
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>إغلاق</AlertDialogCancel>
             <AlertDialogAction onClick={() => setIssues(null)}>

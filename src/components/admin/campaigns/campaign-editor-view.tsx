@@ -38,6 +38,12 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ActionButton } from "@/components/shared/action-button";
+import { focusDataField } from "@/components/admin/focus-data-field";
+import {
+  ReadinessIssueList,
+  type ReadinessIssue,
+} from "@/components/admin/readiness-issue-list";
+import type { ReadinessTarget } from "@/lib/readiness-targets";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -155,7 +161,10 @@ const formSchema = z
   .object({
     titleAr: z.string().trim().min(1, "عنوان الحملة مطلوب."),
     descriptionAr: z.string().optional().nullable(),
-    instructionsAr: z.string().optional().nullable(),
+    instructionsAr: z
+      .string()
+      .trim()
+      .min(1, "تعليمات المشاركة مطلوبة قبل النشر."),
     startsAtLocal: z.string().optional(),
     endsAtLocal: z.string().optional(),
     minimumReportingThreshold: z.coerce
@@ -226,8 +235,10 @@ const DEFAULTS: CampaignFormValues = {
 
 export function CampaignEditorView({
   campaignId,
+  readOnly = false,
 }: {
   campaignId: string;
+  readOnly?: boolean;
 }) {
   const router = useRouter();
   const { toast } = useToast();
@@ -393,6 +404,18 @@ export function CampaignEditorView({
     }
   );
 
+  // «إصلاح» from the readiness dialog: focus the offending settings field
+  // in place, or hand off to the matching campaign-detail tab.
+  const handleResolveIssue = (target: ReadinessTarget) => {
+    if (target.tab === "settings") {
+      if (target.field) focusDataField(target.field);
+      return;
+    }
+    router.push(
+      `/?view=admin&tab=campaigns&sub=detail&id=${encodeURIComponent(campaignId)}&dtab=${target.tab}`
+    );
+  };
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -445,7 +468,10 @@ export function CampaignEditorView({
         </div>
       ) : (
         <Form {...form}>
-          <form onSubmit={onSubmit} className="space-y-6">
+          <form onSubmit={onSubmit}>
+            {/* `disabled` on the fieldset gates every control at once when
+               the parent detail view marks the campaign read-only. */}
+            <fieldset disabled={readOnly} className="space-y-6">
             {/* Basic info */}
             <Card>
               <CardHeader>
@@ -459,7 +485,7 @@ export function CampaignEditorView({
                   control={form.control}
                   name="titleAr"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem data-field="titleAr">
                       <FormLabel>عنوان الحملة *</FormLabel>
                       <FormControl>
                         <Input
@@ -500,8 +526,8 @@ export function CampaignEditorView({
                   control={form.control}
                   name="instructionsAr"
                   render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>تعليمات المشاركة</FormLabel>
+                    <FormItem data-field="instructionsAr">
+                      <FormLabel>تعليمات المشاركة *</FormLabel>
                       <FormControl>
                         <Textarea
                           placeholder="تعليمات تظهر قبل بدء الاستبيان"
@@ -511,10 +537,11 @@ export function CampaignEditorView({
                           name={field.name}
                           ref={field.ref}
                           aria-label="تعليمات المشاركة"
+                          aria-required={true}
                         />
                       </FormControl>
                       <FormDescription>
-                        مطلوبة قبل فتح الحملة (تحقق الجاهزية).
+                        تظهر للموظف قبل بدء الاستبيان، ومطلوبة قبل فتح الحملة.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -536,7 +563,7 @@ export function CampaignEditorView({
                   control={form.control}
                   name="startsAtLocal"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem data-field="startsAtLocal">
                       <FormLabel>تاريخ البداية</FormLabel>
                       <FormControl>
                         <Input
@@ -556,7 +583,7 @@ export function CampaignEditorView({
                   control={form.control}
                   name="endsAtLocal"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem data-field="endsAtLocal">
                       <FormLabel>تاريخ النهاية</FormLabel>
                       <FormControl>
                         <Input
@@ -588,7 +615,7 @@ export function CampaignEditorView({
                   control={form.control}
                   name="minimumReportingThreshold"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem data-field="minimumReportingThreshold">
                       <FormLabel>الحد الأدنى لعرض النتائج *</FormLabel>
                       <FormControl>
                         <Input
@@ -610,7 +637,7 @@ export function CampaignEditorView({
                   control={form.control}
                   name="minExecutives"
                   render={({ field }) => (
-                    <FormItem>
+                    <FormItem data-field="minExecutives">
                       <FormLabel>الحد الأدنى لعدد المسؤولين</FormLabel>
                       <FormControl>
                         <Input
@@ -739,68 +766,76 @@ export function CampaignEditorView({
               </CardContent>
             </Card>
 
-            {/* Action buttons */}
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-              <Button
-                type="submit"
-                disabled={saveMutation.isPending}
-                className="sm:min-w-32"
-              >
-                {saveMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4" />
-                )}
-                حفظ كمسودة
-              </Button>
-
-              {!isCreate && status === "draft" && (
-                <ActionButton
-                  label="جدولة"
-                  loadingLabel="جارٍ الجدولة..."
-                  icon={<CalendarClock className="h-4 w-4" />}
-                  variant="outline"
-                  confirmMessage="سيتم تحويل الحملة إلى حالة المجدولة. هل تريد المتابعة؟"
-                  mutationFn={async () => {
-                    const res = await fetch(
-                      `/api/admin/campaigns/${encodeURIComponent(campaignId)}/schedule`,
-                      { method: "POST" }
-                    );
-                    const json = (await res.json()) as {
-                      ok: boolean;
-                      error?: string;
-                    };
-                    return json;
-                  }}
-                  queryKeyToInvalidate={["admin-campaign", campaignId]}
-                  onSuccess={() =>
-                    router.push(
-                      `/?view=admin&tab=campaigns&sub=detail&id=${encodeURIComponent(campaignId)}`
-                    )
-                  }
-                />
-              )}
-
-              {!isCreate &&
-                (status === "draft" || status === "scheduled") && (
-                  <ActivateButton campaignId={campaignId} />
-                )}
-
-              {!isCreate && campaign && (
+            {/* Action buttons — hidden when the parent detail view marks
+                the campaign read-only (the settings tab banner above the
+                editor explains why, and where to edit instead). */}
+            {!readOnly && (
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
                 <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    router.push(
-                      `/?view=admin&tab=campaigns&sub=detail&id=${encodeURIComponent(campaignId)}&preview=1`
-                    )
-                  }
+                  type="submit"
+                  disabled={saveMutation.isPending}
+                  className="sm:min-w-32"
                 >
-                  <Eye className="h-4 w-4" />
-                  معاينة
+                  {saveMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  حفظ كمسودة
                 </Button>
-              )}
-            </div>
+
+                {!isCreate && status === "draft" && (
+                  <ActionButton
+                    label="جدولة"
+                    loadingLabel="جارٍ الجدولة..."
+                    icon={<CalendarClock className="h-4 w-4" />}
+                    variant="outline"
+                    confirmMessage="سيتم تحويل الحملة إلى حالة المجدولة. هل تريد المتابعة؟"
+                    mutationFn={async () => {
+                      const res = await fetch(
+                        `/api/admin/campaigns/${encodeURIComponent(campaignId)}/schedule`,
+                        { method: "POST" }
+                      );
+                      const json = (await res.json()) as {
+                        ok: boolean;
+                        error?: string;
+                      };
+                      return json;
+                    }}
+                    queryKeyToInvalidate={["admin-campaign", campaignId]}
+                    onSuccess={() =>
+                      router.push(
+                        `/?view=admin&tab=campaigns&sub=detail&id=${encodeURIComponent(campaignId)}`
+                      )
+                    }
+                  />
+                )}
+
+                {!isCreate &&
+                  (status === "draft" || status === "scheduled") && (
+                    <ActivateButton
+                      campaignId={campaignId}
+                      onResolveIssue={handleResolveIssue}
+                    />
+                  )}
+
+                {!isCreate && campaign && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      router.push(
+                        `/?view=admin&tab=campaigns&sub=detail&id=${encodeURIComponent(campaignId)}&preview=1`
+                      )
+                    }
+                  >
+                    <Eye className="h-4 w-4" />
+                    معاينة
+                  </Button>
+                )}
+              </div>
+            )}
+            </fieldset>
           </form>
         </Form>
       )}
@@ -854,13 +889,17 @@ function ToggleRow({
 
 /** The activate button — pre-fetches readiness, then either activates
  * directly (when ready) or surfaces an AlertDialog listing the issues. */
-function ActivateButton({ campaignId }: { campaignId: string }) {
+function ActivateButton({
+  campaignId,
+  onResolveIssue,
+}: {
+  campaignId: string;
+  onResolveIssue?: (target: ReadinessTarget) => void;
+}) {
   const router = useRouter();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const [issues, setIssues] = useState<
-    { key: string; messageAr: string }[] | null
-  >(null);
+  const [issues, setIssues] = useState<ReadinessIssue[] | null>(null);
   const [pending, setPending] = useState(false);
 
   const handleActivate = async () => {
@@ -948,17 +987,18 @@ function ActivateButton({ campaignId }: { campaignId: string }) {
               إعادة المحاولة:
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <ul className="max-h-72 overflow-y-auto space-y-2 scroll-rtl pe-1">
-            {issues?.map((iss) => (
-              <li
-                key={iss.key}
-                className="flex gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm"
-              >
-                <span className="text-destructive" aria-hidden="true">•</span>
-                <span className="text-foreground">{iss.messageAr}</span>
-              </li>
-            ))}
-          </ul>
+          <ReadinessIssueList
+            issues={issues ?? []}
+            variant="dialog"
+            onResolve={
+              onResolveIssue
+                ? (target) => {
+                    setIssues(null);
+                    onResolveIssue(target);
+                  }
+                : undefined
+            }
+          />
           <AlertDialogFooter>
             <AlertDialogCancel>إغلاق</AlertDialogCancel>
             <AlertDialogAction onClick={() => setIssues(null)}>

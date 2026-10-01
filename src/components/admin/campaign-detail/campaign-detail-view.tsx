@@ -21,7 +21,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dynamic from "next/dynamic";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
@@ -62,6 +62,9 @@ import {
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ActionButton } from "@/components/shared/action-button";
+import { focusDataField } from "@/components/admin/focus-data-field";
+import { ReadinessIssueList } from "@/components/admin/readiness-issue-list";
+import type { ReadinessTarget } from "@/lib/readiness-targets";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -117,7 +120,10 @@ import {
 // even before 3-b's files exist. Once 3-b lands, dynamic() resolves to
 // their real component automatically.
 
-type HeaderProps = { campaignId: string };
+type HeaderProps = {
+  campaignId: string;
+  onResolveIssue?: (target: ReadinessTarget) => void;
+};
 type EditorProps = { campaignId: string; readOnly?: boolean };
 
 function FallbackHeader({ campaignId }: HeaderProps) {
@@ -355,11 +361,40 @@ function isEditable(status: string): boolean {
   return status === "draft" || status === "scheduled";
 }
 
+/** Valid `?dtab=` values — matches the TabsTrigger values below. */
+const TAB_VALUES = [
+  "settings",
+  "questions",
+  "executives",
+  "preview",
+  "readiness",
+  "results",
+];
+
 // =========================================================================
 // Main component
 // =========================================================================
 export function CampaignDetailView({ campaignId }: { campaignId: string }) {
-  const [tab, setTab] = useState<string>("settings");
+  const sp = useSearchParams();
+  const [tab, setTab] = useState<string>(() => {
+    const requested = sp.get("dtab");
+    return requested && TAB_VALUES.includes(requested) ? requested : "settings";
+  });
+
+  // Deep link from other admin surfaces: ?dtab=<tab>&focus=<data-field>.
+  // `focusDataField` polls until the control mounts, so it's safe to call
+  // while the settings form is still loading.
+  const focusField = sp.get("focus");
+  useEffect(() => {
+    if (focusField) focusDataField(focusField);
+  }, [focusField]);
+
+  /** Readiness «إصلاح» shortcut: jump to the tab that fixes the
+   *  issue and focus the exact control when it lives in the settings form. */
+  const handleResolveIssue = (target: ReadinessTarget) => {
+    setTab(target.tab);
+    if (target.field) focusDataField(target.field);
+  };
 
   const { data, isLoading, isError, error } = useQuery<{ ok: boolean; data: CampaignDetail } | null>({
     queryKey: ["admin-campaign-detail", campaignId],
@@ -392,7 +427,10 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
   return (
     <div className="flex flex-col gap-6">
       {/* Header from Task 3-b (with safe fallback) */}
-      <CampaignDetailHeader campaignId={campaignId} />
+      <CampaignDetailHeader
+        campaignId={campaignId}
+        onResolveIssue={handleResolveIssue}
+      />
 
       <Tabs value={tab} onValueChange={setTab} className="gap-4">
         <TabsList className="flex h-auto w-full flex-wrap">
@@ -429,7 +467,7 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
               <AlertTitle>الحملة {campaign.status === "active" ? "نشطة" : campaign.status === "closed" ? "مغلقة" : "مؤرشفة"}</AlertTitle>
               <AlertDescription>
                 {campaign.status === "active"
-                  ? "يمكن تعديل الوصف وتاريخ الانتهاء وعتبة الإخفاء فقط. التعديلات الهيكلية محظورة حفاظاً على سلامة النتائج."
+                  ? "الحقول مقفولة في هذا التبويب حفاظاً على سلامة النتائج. الحقول المسموح بها أثناء التشغيل (الوصف، تاريخ النهاية، الحد الأدنى لعرض النتائج) متاحة من زر «تعديل» في رأس الصفحة."
                   : "لا يمكن تعديل حملة مغلقة أو مؤرشفة. يمكنك نسخها لإنشاء حملة جديدة."}
               </AlertDescription>
             </Alert>
@@ -453,7 +491,11 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
         </TabsContent>
 
         <TabsContent value="readiness">
-          <ReadinessTab campaignId={campaignId} status={campaign.status} />
+          <ReadinessTab
+            campaignId={campaignId}
+            status={campaign.status}
+            onResolveIssue={handleResolveIssue}
+          />
         </TabsContent>
 
         <TabsContent value="results">
@@ -1473,9 +1515,11 @@ function PreviewQuestionBlock({ q }: { q: PreviewQuestion }) {
 function ReadinessTab({
   campaignId,
   status,
+  onResolveIssue,
 }: {
   campaignId: string;
   status: string;
+  onResolveIssue?: (target: ReadinessTarget) => void;
 }) {
   const { toast } = useToast();
   const qc = useQueryClient();
@@ -1560,14 +1604,11 @@ function ReadinessTab({
           <XCircle className="h-4 w-4" />
           <AlertTitle>لا يمكن فتح الحملة قبل معالجة العناصر التالية:</AlertTitle>
           <AlertDescription>
-            <ul className="mt-2 flex flex-col gap-1">
-              {r.issues.map((iss) => (
-                <li key={iss.key} className="flex items-start gap-2">
-                  <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <span>{iss.messageAr}</span>
-                </li>
-              ))}
-            </ul>
+            <ReadinessIssueList
+              issues={r.issues}
+              variant="alert"
+              onResolve={onResolveIssue}
+            />
           </AlertDescription>
         </Alert>
       )}

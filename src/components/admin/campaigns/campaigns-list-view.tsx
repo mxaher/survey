@@ -35,6 +35,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/shared/page-header";
+import { ReadinessIssueList } from "@/components/admin/readiness-issue-list";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 
@@ -654,6 +655,22 @@ function ReadinessIssuesDialog({
   } | null;
   onClose: () => void;
 }) {
+  const router = useRouter();
+
+  const handleResolve = (target: { tab: string; field?: string }) => {
+    if (!state) return;
+    const params = new URLSearchParams({
+      view: "admin",
+      tab: "campaigns",
+      sub: "detail",
+      id: state.campaignId,
+      dtab: target.tab,
+    });
+    if (target.field) params.set("focus", target.field);
+    onClose();
+    router.push(`/?${params.toString()}`);
+  };
+
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -665,17 +682,11 @@ function ReadinessIssuesDialog({
               : ""}
           </DialogDescription>
         </DialogHeader>
-        <ul className="max-h-80 overflow-y-auto space-y-2 scroll-rtl pe-1">
-          {state?.issues.map((iss) => (
-            <li
-              key={iss.key}
-              className="flex gap-2 rounded-md border border-border bg-card/50 px-3 py-2 text-sm"
-            >
-              <span className="text-destructive" aria-hidden="true">•</span>
-              <span className="text-foreground">{iss.messageAr}</span>
-            </li>
-          ))}
-        </ul>
+        <ReadinessIssueList
+          issues={state?.issues ?? []}
+          variant="dialog"
+          onResolve={handleResolve}
+        />
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             إغلاق
