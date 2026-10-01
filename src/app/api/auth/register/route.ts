@@ -78,7 +78,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     .bind(email)
     .first<EmployeeRow>();
 
-  const emailConfigured = isEmailConfigured();
+  const emailConfigured = await isEmailConfigured();
   const token = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + VERIFY_TTL_MS).toISOString();
   const verifyUrl = new URL(`/api/auth/verify?token=${token}`, request.url).toString();
@@ -102,8 +102,8 @@ export const POST = apiHandler(async (request: NextRequest) => {
 
   // Without a mail provider there is no link to follow, so the account is
   // activated immediately — the corporate-domain gate above is then the only
-  // check we can still enforce. Configure EMAIL_FROM + a provider key to
-  // switch back to link verification.
+  // check we can still enforce. Set the sender + a provider key (worker env
+  // or إعدادات النظام) to switch back to link verification.
   const verified = emailConfigured && !existing?.emailVerified ? 0 : 1;
   const storedToken = verified ? null : token;
   const storedExpiry = verified ? null : expiresAt;

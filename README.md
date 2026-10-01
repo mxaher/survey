@@ -165,6 +165,16 @@ npx wrangler secret put RESEND_API_KEY        # optional: verification emails
 | `EMAIL_FROM` | var/secret | Verified sender address, e.g. `survey@almarshad.com` |
 | `EMAIL_FROM_NAME` | var | Optional sender display name (defaults to `استبيان بيئة العمل`) |
 
+> **Email can be enabled without a redeploy.** `EMAIL_FROM` and `RESEND_API_KEY`
+> may instead be stored as `SystemSetting` rows from the admin screen
+> `/?view=admin&tab=settings` → *التحقق من البريد الإلكتروني*. Resolution order
+> for both values is **Worker env first, then the settings row**, so a Wrangler
+> secret always wins; `/api/admin/system-stats` reports which source is active
+> (`emailProviderSource` / `emailSenderSource`). The stored key is a secret:
+> reads return it redacted (`valueAr: ""`, `configured: true`) and audit entries
+> record `[redacted]` instead of the previous value. Shape is enforced on write —
+> the sender must be an email address and the key must look like `re_…`.
+
 > **No admin signing secret.** `ADMIN_AUTH_SECRET` used to sign the admin cookie;
 > sessions are now opaque random tokens stored in the `Session` table
 > (`src/lib/session.ts`), so nothing in the app reads that variable any more.
@@ -367,10 +377,10 @@ At campaign activation (`POST /api/admin/campaigns/:id/activate`):
 - **Rate limiting** — `src/lib/rate-limit.ts` is a D1-backed fixed-window limiter
   (10 attempts / 60s per key) applied to login and to registration / resend-verification.
   It fails open: without a database the protected action can't succeed anyway.
-- **Email verification** — with `RESEND_API_KEY` (or Mailjet) configured,
-  `POST /api/auth/register` emails a one-time link and the account stays locked until
-  opened; without a provider the account activates immediately so sign-in never
-  dead-ends.
+- **Email verification** — with `RESEND_API_KEY` (or Mailjet) configured — from a
+  Worker secret *or* the إعدادات النظام screen — `POST /api/auth/register` emails a
+  one-time link and the account stays locked until opened; without a provider the
+  account activates immediately so sign-in never dead-ends.
 - **Password hashing** — `src/lib/auth.ts` (PBKDF2-SHA256 via Web Crypto, edge-safe).
 
 ---
@@ -444,7 +454,7 @@ and employee endpoint also sends `Cache-Control: no-store`.
 | GET | `/api/admin/system-stats` | DB size + table counts + last audit time |
 | GET | `/api/admin/notifications` | Active campaign alerts (about-to-close, threshold-not-met, etc.) |
 | GET | `/api/admin/search?q=...` | Global search (campaigns + questions + executives) |
-| GET/POST | `/api/admin/settings` | List / upsert system settings |
+| GET/POST | `/api/admin/settings` | List / upsert system settings (secret values redacted) |
 | GET/PATCH/DELETE | `/api/admin/settings/:key` | Single setting CRUD |
 | GET/POST | `/api/admin/users` | List / create admin users (SUPER_ADMIN only) |
 | GET/PATCH/DELETE | `/api/admin/users/:id` | Single user CRUD (SUPER_ADMIN only) |

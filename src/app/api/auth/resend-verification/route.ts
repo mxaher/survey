@@ -45,7 +45,7 @@ export const POST = apiHandler(async (request: NextRequest) => {
     return fail("محاولات كثيرة جدًا. يرجى المحاولة بعد دقيقة.", 429);
   }
 
-  if (!isEmailConfigured()) {
+  if (!(await isEmailConfigured())) {
     return fail(
       "خدمة إرسال البريد غير متاحة حاليًا — تواصل مع إدارة النظام.",
       503

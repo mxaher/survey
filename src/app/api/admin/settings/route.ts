@@ -5,12 +5,14 @@ import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
 import { MESSAGES } from "@/lib/messages";
+import { toPublicSetting, validateSettingValue } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
 /**
  * GET /api/admin/settings
  * Returns all SystemSetting rows. Auth required (both roles).
+ * Secret values are redacted — see `toPublicSetting`.
  */
 export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
@@ -20,15 +22,10 @@ export const GET = apiHandler(async () => {
 
   const settings = await db
     .prepare("SELECT * FROM SystemSetting ORDER BY key ASC")
-    .all();
+    .all<{ id: string; key: string; valueAr: string; updatedAt: string }>();
 
   return ok({
-    settings: (settings.results ?? []).map((s) => ({
-      id: s.id,
-      key: s.key,
-      valueAr: s.valueAr,
-      updatedAt: s.updatedAt,
-    })),
+    settings: (settings.results ?? []).map((s) => toPublicSetting(s)),
   });
 });
 
@@ -59,6 +56,9 @@ export const POST = apiHandler(async (request: NextRequest) => {
   }
   const { key, valueAr } = parsed.data;
 
+  const invalid = validateSettingValue(key, valueAr);
+  if (invalid) return fail(invalid, 422);
+
   const existing = await db
     .prepare("SELECT id FROM SystemSetting WHERE key = ?")
     .bind(key)
@@ -88,10 +88,5 @@ export const POST = apiHandler(async (request: NextRequest) => {
     },
   });
 
-  return ok({
-    id: setting.id,
-    key: setting.key,
-    valueAr: setting.valueAr,
-    updatedAt: setting.updatedAt,
-  });
+  return ok(toPublicSetting(setting));
 });

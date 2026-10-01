@@ -5,6 +5,11 @@ import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { writeAudit } from "@/lib/audit";
 import { MESSAGES } from "@/lib/messages";
+import {
+  auditValueFor,
+  toPublicSetting,
+  validateSettingValue,
+} from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +20,7 @@ const patchSchema = z.object({
 /**
  * GET /api/admin/settings/[key]
  * Returns one system setting by key. Auth required (both roles).
+ * Secret values are redacted — see `toPublicSetting`.
  */
 export const GET = apiHandler(
   async (_request: NextRequest, ctx: { params: Promise<{ key: string }> }) => {
@@ -29,12 +35,7 @@ export const GET = apiHandler(
       .first();
     if (!setting) return fail("الإعداد غير موجود.", 404);
 
-    return ok({
-      id: setting.id,
-      key: setting.key,
-      valueAr: setting.valueAr,
-      updatedAt: setting.updatedAt,
-    });
+    return ok(toPublicSetting(setting));
   }
 );
 
@@ -58,6 +59,9 @@ export const PATCH = apiHandler(
     if (!parsed.success) {
       return fail(parsed.error.issues?.[0]?.message ?? "صيغة الطلب غير صالحة.", 422);
     }
+
+    const invalid = validateSettingValue(key, parsed.data.valueAr);
+    if (invalid) return fail(invalid, 422);
 
     const existing = await db
       .prepare("SELECT * FROM SystemSetting WHERE key = ?")
@@ -84,16 +88,13 @@ export const PATCH = apiHandler(
       entityId: updated.id,
       metadata: {
         key,
-        previousValueAr: existing.valueAr,
+        // Redacted for secret keys — the audit trail records *that* the key
+        // changed, never the previous credential.
+        previousValueAr: auditValueFor(key, existing.valueAr),
       },
     });
 
-    return ok({
-      id: updated.id,
-      key: updated.key,
-      valueAr: updated.valueAr,
-      updatedAt: updated.updatedAt,
-    });
+    return ok(toPublicSetting(updated));
   }
 );
 

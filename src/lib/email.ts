@@ -1,4 +1,9 @@
 import { readWorkerEnv } from "@/lib/env";
+import {
+  EMAIL_FROM_KEY,
+  RESEND_API_KEY_KEY,
+  readSystemSettings,
+} from "@/lib/settings";
 
 /**
  * Transactional email.
@@ -15,8 +20,14 @@ import { readWorkerEnv } from "@/lib/env";
  * Sender identity comes from `EMAIL_FROM` (+ optional `EMAIL_FROM_NAME`), which
  * must be a domain verified with the provider.
  *
- * Configuration is read through `readWorkerEnv`, so it may come from worker
- * secrets (`wrangler secret put RESEND_API_KEY`) or `[vars]` in wrangler.toml.
+ * Each value is resolved from two places, in order:
+ *   1. **Worker env** — a secret (`wrangler secret put RESEND_API_KEY`) or a
+ *      `[vars]` entry. Always wins: it is the platform-level, rotatable copy.
+ *   2. **`SystemSetting` row** — written from the admin settings screen
+ *      (`إعدادات النظام ← التحقق من البريد الإلكتروني`). This is what lets an
+ *      operator enable verification without a redeploy.
+ *
+ * {@link getEmailStatus} reports which source won so the UI can say so.
  */
 
 export interface EmailSendResult {
@@ -26,7 +37,7 @@ export interface EmailSendResult {
   error?: string;
 }
 
-interface EmailConfig {
+export interface EmailConfig {
   resendApiKey?: string;
   mailjetApiKey?: string;
   mailjetSecretKey?: string;
@@ -34,29 +45,119 @@ interface EmailConfig {
   fromName: string;
 }
 
+/** Where a resolved value came from. `null` = nothing found anywhere. */
+export type EmailConfigSource = "worker_env" | "system_setting" | null;
+
+export interface EmailStatus {
+  /** At least one provider key *and* a sender are present. */
+  configured: boolean;
+  /** Source of the provider key that would actually be used. */
+  providerSource: EmailConfigSource;
+  /** Source of the sender address. */
+  senderSource: EmailConfigSource;
+  /** Provider that would be tried first, or null. */
+  provider: "resend" | "mailjet" | null;
+  /** Resolved sender address — never a secret, safe to display. */
+  fromEmail: string | null;
+}
+
+export interface ResolvedEmail {
+  config: EmailConfig | null;
+  status: EmailStatus;
+}
+
 const DEFAULT_FROM_NAME = "استبيان بيئة العمل";
 
-function loadConfig(): EmailConfig | null {
-  const fromEmail = readWorkerEnv("EMAIL_FROM");
-  if (!fromEmail) return null;
+const ENV_KEYS = [
+  "EMAIL_FROM",
+  "RESEND_API_KEY",
+  "MAILJET_API_KEY",
+  "MAILJET_SECRET_KEY",
+  "EMAIL_FROM_NAME",
+] as const;
+
+/**
+ * Pure resolution step — takes the two candidate sources and decides what the
+ * transport should use. Kept side-effect free so it can be unit tested.
+ */
+export function resolveEmailConfig(input: {
+  env: Partial<Record<(typeof ENV_KEYS)[number], string>>;
+  settings: Map<string, string>;
+}): ResolvedEmail {
+  const { env, settings } = input;
+
+  const envFrom = env.EMAIL_FROM;
+  const fromEmail = envFrom ?? settings.get(EMAIL_FROM_KEY);
+  const senderSource: EmailConfigSource = envFrom
+    ? "worker_env"
+    : fromEmail
+      ? "system_setting"
+      : null;
+
+  const envResend = env.RESEND_API_KEY;
+  const resendApiKey = envResend ?? settings.get(RESEND_API_KEY_KEY);
+
+  const mailjetApiKey = env.MAILJET_API_KEY;
+  const mailjetSecretKey = env.MAILJET_SECRET_KEY;
+  const hasMailjet = Boolean(mailjetApiKey && mailjetSecretKey);
+
+  const provider = resendApiKey ? "resend" : hasMailjet ? "mailjet" : null;
+  // Source of the provider that will actually be tried. Mailjet has no
+  // settings-row equivalent, so it always comes from the worker env.
+  const providerSource: EmailConfigSource =
+    provider === "resend"
+      ? envResend
+        ? "worker_env"
+        : "system_setting"
+      : provider === "mailjet"
+        ? "worker_env"
+        : null;
+
+  const status: EmailStatus = {
+    configured: Boolean(fromEmail) && Boolean(provider),
+    providerSource,
+    senderSource,
+    provider,
+    fromEmail: fromEmail ?? null,
+  };
+
+  if (!fromEmail) {
+    // Without a verified sender the provider keys are unusable, exactly as
+    // before: no config at all, so callers take their "not configured" path.
+    return { config: null, status };
+  }
 
   return {
-    resendApiKey: readWorkerEnv("RESEND_API_KEY"),
-    mailjetApiKey: readWorkerEnv("MAILJET_API_KEY"),
-    mailjetSecretKey: readWorkerEnv("MAILJET_SECRET_KEY"),
-    fromEmail,
-    fromName: readWorkerEnv("EMAIL_FROM_NAME") ?? DEFAULT_FROM_NAME,
+    config: {
+      resendApiKey,
+      mailjetApiKey,
+      mailjetSecretKey,
+      fromEmail,
+      fromName: env.EMAIL_FROM_NAME ?? DEFAULT_FROM_NAME,
+    },
+    status,
   };
 }
 
+async function loadConfig(): Promise<ResolvedEmail> {
+  const env: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
+  for (const key of ENV_KEYS) {
+    const value = readWorkerEnv(key);
+    if (value) env[key] = value;
+  }
+
+  const settings = await readSystemSettings([EMAIL_FROM_KEY, RESEND_API_KEY_KEY]);
+  return resolveEmailConfig({ env, settings });
+}
+
+/** Full picture of the email transport, for admin surfaces. */
+export async function getEmailStatus(): Promise<EmailStatus> {
+  return (await loadConfig()).status;
+}
+
 /** Whether at least one provider + sender is configured. */
-export function isEmailConfigured(): boolean {
-  const config = loadConfig();
-  if (!config) return false;
-  return Boolean(
-    config.resendApiKey ||
-      (config.mailjetApiKey && config.mailjetSecretKey)
-  );
+export async function isEmailConfigured(): Promise<boolean> {
+  return (await loadConfig()).status.configured;
 }
 
 async function sendViaResend(
@@ -151,7 +252,7 @@ export async function sendEmail(
   subject: string,
   html: string
 ): Promise<EmailSendResult> {
-  const config = loadConfig();
+  const { config } = await loadConfig();
   if (!config) {
     return {
       success: false,

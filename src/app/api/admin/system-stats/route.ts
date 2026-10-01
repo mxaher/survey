@@ -2,7 +2,7 @@ import { getDB } from "@/lib/db";
 import { ok, fail, apiHandler } from "@/lib/api";
 import { getAdminUser } from "@/lib/admin-auth";
 import { isHmacSecretConfigured } from "@/lib/employee-hmac";
-import { isEmailConfigured } from "@/lib/email";
+import { getEmailStatus } from "@/lib/email";
 import { MESSAGES } from "@/lib/messages";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +67,8 @@ export const GET = apiHandler(async () => {
     .prepare("SELECT createdAt FROM AuditLog ORDER BY createdAt DESC LIMIT 1")
     .first<{ createdAt: string }>();
 
+  const email = await getEmailStatus();
+
   return ok({
     dbSizeBytes,
     dbSizeLabel,
@@ -85,9 +87,15 @@ export const GET = apiHandler(async () => {
     // Whether the real `EMPLOYEE_HMAC_SECRET` worker secret is set (the
     // response only reports its presence, never the value).
     hmacSecretConfigured: isHmacSecretConfigured(),
-    // Whether an email provider + sender is configured (admin-triggered
-    // transactional mail).
-    emailConfigured: isEmailConfigured(),
+    // Email transport health (presence only — no key is ever returned).
+    // `providerSource` tells the admin whether the key came from a worker
+    // secret or from the إعدادات النظام screen, so they know which one to
+    // update when rotating it.
+    emailConfigured: email.configured,
+    emailProvider: email.provider,
+    emailProviderSource: email.providerSource,
+    emailFrom: email.fromEmail,
+    emailSenderSource: email.senderSource,
     serverTime: new Date().toISOString(),
   });
 });
