@@ -1195,16 +1195,14 @@ function StepReview({
           <CardTitle className="text-base">حالة الأقسام</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ReviewRow
-            label="بيئة العمل"
-            state={
-              !envSectionEnabled(campaign)
-                ? "skipped"
-                : environmentSubmitted
-                ? "done"
-                : "pending"
-            }
-          />
+          {envSectionEnabled(campaign) ? (
+            <ReviewRow
+              label="بيئة العمل"
+              state={
+                environmentSubmitted ? "done" : "pending"
+              }
+            />
+          ) : null}
           <ReviewRow
             label={
               campaign.allowMultipleExecutiveEvaluations
@@ -1236,16 +1234,12 @@ function StepReview({
               </ul>
             </div>
           ) : null}
-          <ReviewRow
-            label="البيئة المستقبلية"
-            state={
-              !futureSectionEnabled(campaign)
-                ? "skipped"
-                : futureSubmitted
-                ? "done"
-                : "pending"
-            }
-          />
+          {futureSectionEnabled(campaign) ? (
+            <ReviewRow
+              label="البيئة المستقبلية"
+              state={futureSubmitted ? "done" : "pending"}
+            />
+          ) : null}
         </CardContent>
       </Card>
 

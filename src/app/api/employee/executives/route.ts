@@ -5,6 +5,7 @@ import { noStore, fail, apiHandler } from "@/lib/api";
 import { getVerifiedEmployee, getEmployeeHmac } from "@/lib/identity";
 import { MESSAGES } from "@/lib/messages";
 import { isWithinActiveWindow, nowUtc } from "@/lib/time";
+import { ASSIGNED_EXECUTIVES_SQL } from "@/lib/employee-queries";
 
 export const dynamic = "force-dynamic";
 
@@ -51,14 +52,7 @@ export const GET = apiHandler(async (request: NextRequest) => {
   }
 
   const { results: assignments } = await db
-    .prepare(
-      `SELECT ce.id, ce.displayOrder, ce.isEnabled,
-              e.id AS executiveId, e.nameAr, e.titleAr, e.category, e.departmentAr
-       FROM CampaignExecutive ce
-       JOIN Executive e ON e.id = ce.executiveId
-       WHERE ce.campaignId = ? AND ce.isEnabled = 1 AND e.isActive = 1 AND e.deletedAt IS NULL
-       ORDER BY ce.displayOrder ASC`
-    )
+    .prepare(ASSIGNED_EXECUTIVES_SQL)
     .bind(campaignId)
     .all();
 
