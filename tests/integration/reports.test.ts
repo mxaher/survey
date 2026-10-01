@@ -84,6 +84,12 @@ interface SnapshotSpec {
 function newDb(): { db: Database; d1: ReturnType<typeof toD1> } {
   const db = openMemoryDb();
   applyMigrations(db);
+  // `0010_ms_forms_survey.sql` publishes the real survey into `camp-001`
+  // (frozen snapshots for the 15 form questions). These fixtures insert their
+  // own snapshots and responses, so the published ones are cleared first.
+  db.exec(
+    "DELETE FROM CampaignQuestionOptionSnapshot; DELETE FROM CampaignQuestionSnapshot;"
+  );
   return { db, d1: toD1(db) };
 }
 

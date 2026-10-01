@@ -28,15 +28,24 @@ export function openMemoryDb(): Database {
 
 export const MIGRATIONS_DIR = join(import.meta.dir, "..", "..", "migrations");
 
-/** Applies every migration file in lexical order (same order as wrangler). */
-export function applyMigrations(db: Database): string[] {
+/**
+ * Applies every migration file in lexical order (same order as wrangler).
+ *
+ * `upTo` stops after the named file — used by tests that need to exercise a
+ * seed against the state it was written for, before later migrations
+ * re-shaped the same tables.
+ */
+export function applyMigrations(db: Database, upTo?: string): string[] {
   const files = readdirSync(MIGRATIONS_DIR)
     .filter((f) => f.endsWith(".sql"))
     .sort();
+  const applied: string[] = [];
   for (const file of files) {
+    if (upTo && file.localeCompare(upTo) > 0) break;
     db.exec(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
+    applied.push(file);
   }
-  return files;
+  return applied;
 }
 
 /** Applies a single migration file (used for idempotency checks). */

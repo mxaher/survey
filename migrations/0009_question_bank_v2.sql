@@ -164,7 +164,8 @@ JOIN (
 ) s
 WHERE q.code IN ('LEAD_Q02','LEAD_Q05','LEAD_Q08','LEAD_Q09','LEAD_Q11','LEAD_Q12');
 
--- (b2) Degree scale — the question-specific fourth option (6 rows)
+-- (b2) Degree scale — the question-specific fourth option (6 rows, split
+-- into chunks of 5 because D1 rejects compound SELECTs longer than that)
 INSERT OR IGNORE INTO QuestionOption
   (id, questionId, value, labelAr, score, displayOrder,
    isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
@@ -176,7 +177,16 @@ JOIN (
   UNION ALL SELECT 'LEAD_Q08', 'لا يساهم في ايجاد حلول مهنية فورية'
   UNION ALL SELECT 'LEAD_Q09', 'لا يقدم الدعم'
   UNION ALL SELECT 'LEAD_Q11', 'لا يساهم إطلاقا'
-  UNION ALL SELECT 'LEAD_Q12', 'لا يتميز بالتعاون والعمل الجماعي'
+) s ON s.qcode = q.code
+WHERE q.code IN ('LEAD_Q02','LEAD_Q05','LEAD_Q08','LEAD_Q09','LEAD_Q11','LEAD_Q12');
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT 'opt_' || q.code || '_degree_none', q.id, 'degree_none', s.labelAr, 2, 4, 0, 1, 0, 1
+FROM Question q
+JOIN (
+  SELECT 'LEAD_Q12' AS qcode, 'لا يتميز بالتعاون والعمل الجماعي' AS labelAr
 ) s ON s.qcode = q.code
 WHERE q.code IN ('LEAD_Q02','LEAD_Q05','LEAD_Q08','LEAD_Q09','LEAD_Q11','LEAD_Q12');
 

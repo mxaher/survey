@@ -187,6 +187,9 @@ VALUES
 -- 2. ANSWER SCALES
 --    (a) FREQUENCY_SCALE_AR → the 33 scored questions
 -- ------------------------------------------------------------
+-- D1 rejects a compound SELECT with more than 5 terms
+-- ("too many terms in compound SELECT"), so every scale is inserted in
+-- chunks of 5 rows. INSERT OR IGNORE keeps the chunks idempotent.
 INSERT OR IGNORE INTO QuestionOption
   (id, questionId, value, labelAr, score, displayOrder,
    isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
@@ -208,7 +211,27 @@ JOIN (
   UNION ALL SELECT 'sometimes', 'أحياناً', 3, 3, 0, 0, 0
   UNION ALL SELECT 'rarely', 'نادراً', 2, 4, 0, 1, 0
   UNION ALL SELECT 'never', 'أبداً', 1, 5, 0, 1, 0
-  UNION ALL SELECT 'not_applicable', 'لا ينطبق / لا أملك معلومات كافية', NULL, 6, 0, 0, 1
+) s
+WHERE (q.code GLOB 'LEAD_*' OR q.code GLOB 'ENV_*')
+  AND q.questionType = 'scale';
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT
+  'opt_' || q.code || '_' || s.value,
+  q.id,
+  s.value,
+  s.labelAr,
+  s.score,
+  s.ord,
+  s.fav,
+  s.unfav,
+  s.excl,
+  1
+FROM Question q
+JOIN (
+  SELECT 'not_applicable' AS value, 'لا ينطبق / لا أملك معلومات كافية' AS labelAr, NULL AS score, 6 AS ord, 0 AS fav, 0 AS unfav, 1 AS excl
 ) s
 WHERE (q.code GLOB 'LEAD_*' OR q.code GLOB 'ENV_*')
   AND q.questionType = 'scale';
@@ -225,12 +248,30 @@ JOIN (
   UNION ALL SELECT 'employee_recognition', 'تقدير الموظفين والاعتراف بجهودهم', 3
   UNION ALL SELECT 'career_growth', 'فرص التطور والترقي', 4
   UNION ALL SELECT 'inter_department_collaboration', 'التعاون بين الإدارات', 5
-  UNION ALL SELECT 'leadership_style', 'أسلوب القيادة والإدارة', 6
+) s
+WHERE q.code = 'FUTURE_PRIORITY_TOP_3';
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT 'opt_' || q.code || '_' || s.value, q.id, s.value, s.labelAr, NULL, s.ord, 0, 0, 0, 1
+FROM Question q
+JOIN (
+  SELECT 'leadership_style' AS value, 'أسلوب القيادة والإدارة' AS labelAr, 6 AS ord
   UNION ALL SELECT 'workload_pressure', 'توزيع الأعباء وضغط العمل', 7
   UNION ALL SELECT 'issue_resolution_speed', 'سرعة معالجة المشكلات', 8
   UNION ALL SELECT 'training_capability_building', 'التدريب وبناء القدرات', 9
   UNION ALL SELECT 'role_clarity', 'وضوح الأدوار والمسؤوليات', 10
-  UNION ALL SELECT 'systems_technology', 'الأنظمة والتقنية', 11
+) s
+WHERE q.code = 'FUTURE_PRIORITY_TOP_3';
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT 'opt_' || q.code || '_' || s.value, q.id, s.value, s.labelAr, NULL, s.ord, 0, 0, 0, 1
+FROM Question q
+JOIN (
+  SELECT 'systems_technology' AS value, 'الأنظمة والتقنية' AS labelAr, 11 AS ord
   UNION ALL SELECT 'incentives_benefits', 'الحوافز والمزايا', 12
 ) s
 WHERE q.code = 'FUTURE_PRIORITY_TOP_3';
@@ -247,7 +288,16 @@ JOIN (
   UNION ALL SELECT 'fairness', 'العدالة', 3
   UNION ALL SELECT 'listening', 'الاستماع', 4
   UNION ALL SELECT 'empowerment', 'التمكين', 5
-  UNION ALL SELECT 'professional_discipline', 'الحزم المهني', 6
+) s
+WHERE q.code = 'FUTURE_LEADERSHIP_BEHAVIOR';
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT 'opt_' || q.code || '_' || s.value, q.id, s.value, s.labelAr, NULL, s.ord, 0, 0, 0, 1
+FROM Question q
+JOIN (
+  SELECT 'professional_discipline' AS value, 'الحزم المهني' AS labelAr, 6 AS ord
   UNION ALL SELECT 'recognition', 'التقدير', 7
   UNION ALL SELECT 'development', 'التطوير', 8
   UNION ALL SELECT 'response_speed', 'سرعة الاستجابة', 9
@@ -267,7 +317,16 @@ JOIN (
   UNION ALL SELECT 'innovative', 'بيئة مبتكرة', 3
   UNION ALL SELECT 'results_focused', 'بيئة تركز على النتائج', 4
   UNION ALL SELECT 'development_oriented', 'بيئة تهتم بتطوير الموظفين', 5
-  UNION ALL SELECT 'transparent', 'بيئة تتسم بالشفافية', 6
+) s
+WHERE q.code = 'FUTURE_DESIRED_WORK_ENVIRONMENT';
+
+INSERT OR IGNORE INTO QuestionOption
+  (id, questionId, value, labelAr, score, displayOrder,
+   isFavorable, isUnfavorable, isExcludedFromCalculation, isActive)
+SELECT 'opt_' || q.code || '_' || s.value, q.id, s.value, s.labelAr, NULL, s.ord, 0, 0, 0, 1
+FROM Question q
+JOIN (
+  SELECT 'transparent' AS value, 'بيئة تتسم بالشفافية' AS labelAr, 6 AS ord
   UNION ALL SELECT 'safe_expression', 'بيئة آمنة للتعبير عن الرأي', 7
   UNION ALL SELECT 'work_life_balance', 'بيئة تحقق توازناً بين الأداء ورفاه الموظف', 8
 ) s
