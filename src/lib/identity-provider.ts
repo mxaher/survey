@@ -17,7 +17,22 @@
  */
 import { readWorkerEnv } from "@/lib/env";
 
-export type ParticipantSource = "cloudflare-access" | "session" | "dev";
+/**
+ * Where a participant identity came from.
+ *
+ *   - `cloudflare-access` / `session` — verified by the corporate identity
+ *     layer or a first-party sign-in.
+ *   - `dev` — the admin Employee Picker preview cookie (write-blocked on
+ *     every submit endpoint).
+ *   - `anonymous` — no sign-in at all: a random per-browser id minted by the
+ *     app itself. It exists only to key the participation HMAC (one
+ *     evaluation per executive per browser) and is never a credential.
+ */
+export type ParticipantSource =
+  | "cloudflare-access"
+  | "session"
+  | "dev"
+  | "anonymous";
 
 /**
  * Result of a background identity check.

@@ -17,7 +17,11 @@ export const GET = apiHandler(async () => {
   const admin = await getAdminUser();
   if (!admin) return fail("غير مصرّح", 401);
 
-  const current = await getVerifiedEmployee();
+  const resolved = await getVerifiedEmployee();
+  // The anonymous fallback identity is not an impersonation: only report an
+  // identity the admin explicitly picked through the Employee Picker.
+  const current =
+    resolved && resolved.source !== "anonymous" ? resolved : null;
   const roster = await listDevEmployees();
   return ok({ current, roster });
 });

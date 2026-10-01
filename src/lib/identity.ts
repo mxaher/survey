@@ -1,4 +1,5 @@
 import { cookies, headers } from "next/headers";
+import { randomUUID } from "crypto";
 import { getDB } from "@/lib/db";
 import { computeEmployeeHmac, normalizeEmployeeId } from "@/lib/employee-hmac";
 import { getSession } from "@/lib/session";
@@ -21,14 +22,16 @@ import {
  *      verified `sub` is used, and only in memory, to key the participation
  *      HMAC.
  *   2. An authenticated **employee session** created by `POST /api/auth/login`
- *      (email + password, corporate `@almarshad.com` addresses only). This is
- *      the default path without Cloudflare Access: the survey shell renders
- *      the `AuthCard` sign-in form on a 401, with self-registration beside
- *      it. The identifier hashed is the account email — never stored
- *      alongside responses, only as an HMAC in `ParticipationLedger`.
+ *      (email + password, corporate `@almarshad.com` addresses only), when a
+ *      browser happens to have one. Nothing requires it: the survey opens
+ *      without any sign-in.
  *   3. The dev impersonation cookie written by the admin Employee Picker. Only
  *      honored for an authenticated admin, and refused by every submit
  *      endpoint — it is a preview tool, never a way to write participation.
+ *   4. **Anonymous** — the default. A random per-browser id kept in an
+ *      httpOnly cookie and used as the HMAC key, so a respondent never signs
+ *      in, never verifies an email, and is never identified; the ledger only
+ *      ever sees `HMAC(anonymous:<uuid>)`.
  */
 export interface VerifiedEmployee {
   externalId: string;
@@ -41,6 +44,7 @@ export interface VerifiedEmployee {
    *   "cloudflare-access" — verified by the corporate identity layer.
    *   "session"           — an authenticated employee session.
    *   "dev"               — the admin Employee Picker impersonation cookie.
+   *   "anonymous"         — no sign-in at all; a random per-browser id.
    *
    * `"dev"` identities may render the employee experience for preview, but
    * they are refused on every submit endpoint: otherwise an admin could pick
@@ -53,6 +57,12 @@ export interface VerifiedEmployee {
 const DEV_EMPLOYEE_COOKIE = "almrshd_dev_employee";
 const DEV_EMPLOYEE_LIST_COOKIE = "almrshd_dev_employees";
 
+/** Per-browser anonymous id — the only thing a respondent ever "has". */
+const ANON_COOKIE = "almrshd_anon_id";
+const ANON_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+const ANON_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 interface EmployeeUserRow {
   id: string;
   email: string;
@@ -62,7 +72,13 @@ interface EmployeeUserRow {
   banned: number;
 }
 
-/** Get the current employee identity. Returns null when nobody is signed in. */
+/**
+ * Get the current employee identity.
+ *
+ * Never requires a sign-in: when no corporate identity, session or admin
+ * preview is present, an anonymous per-browser identity is minted instead,
+ * so the survey works for anyone with the link (no login, no verification).
+ */
 export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
   // 1. Background corporate identity — resolved from the Access JWT the edge
   //    attached. No user interaction, nothing sent back to the browser, and
@@ -79,7 +95,8 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
     };
   }
 
-  // 2. Existing first-party session.
+  // 2. Existing first-party session — an optional convenience, never a
+  //    requirement. A stale or disabled session just falls through.
   const session = await getSession();
 
   if (session?.employeeUserId) {
@@ -88,21 +105,53 @@ export async function getVerifiedEmployee(): Promise<VerifiedEmployee | null> {
       .prepare("SELECT * FROM EmployeeUser WHERE id = ?")
       .bind(session.employeeUserId)
       .first<EmployeeUserRow>();
-    if (!row || !row.isActive || row.banned) return null;
-    return {
-      externalId: row.email,
-      displayName: row.displayName ?? row.email,
-      department: row.department ?? undefined,
-      role: "employee",
-      isActive: true,
-      source: "session",
-    };
+    if (row && row.isActive && !row.banned) {
+      return {
+        externalId: row.email,
+        displayName: row.displayName ?? row.email,
+        department: row.department ?? undefined,
+        role: "employee",
+        isActive: true,
+        source: "session",
+      };
+    }
   }
 
   // 3. Dev impersonation preview — admins only, and write-blocked on submit.
   const admin = await getAdminUser();
-  if (!admin) return null;
-  return readDevEmployeeCookie();
+  if (admin) {
+    const preview = await readDevEmployeeCookie();
+    if (preview) return preview;
+  }
+
+  // 4. Anonymous participation — the default path: no sign-in, no email
+  //    verification, no stored identity. The cookie id never leaves the
+  //    server un-hashed: only HMAC("anonymous:<uuid>") reaches the ledger.
+  return anonymousIdentity();
+}
+
+/** Mints (or reuses) the browser's anonymous participant id. */
+async function anonymousIdentity(): Promise<VerifiedEmployee> {
+  const store = await cookies();
+  const existing = store.get(ANON_COOKIE)?.value;
+  const id =
+    existing && ANON_ID_RE.test(existing) ? existing : randomUUID();
+
+  if (id !== existing) {
+    store.set(ANON_COOKIE, id, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: ANON_COOKIE_MAX_AGE,
+    });
+  }
+
+  return {
+    externalId: `anonymous:${id}`,
+    isActive: true,
+    source: "anonymous",
+  };
 }
 
 async function readDevEmployeeCookie(): Promise<VerifiedEmployee | null> {
