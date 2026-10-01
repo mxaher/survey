@@ -467,7 +467,7 @@ export function CampaignDetailView({ campaignId }: { campaignId: string }) {
               <AlertTitle>الحملة {campaign.status === "active" ? "نشطة" : campaign.status === "closed" ? "مغلقة" : "مؤرشفة"}</AlertTitle>
               <AlertDescription>
                 {campaign.status === "active"
-                  ? "الحقول مقفولة في هذا التبويب حفاظاً على سلامة النتائج. الحقول المسموح بها أثناء التشغيل (الوصف، تاريخ النهاية، الحد الأدنى لعرض النتائج) متاحة من زر «تعديل» في رأس الصفحة."
+                  ? "الحقول مقفولة في هذا التبويب حفاظاً على سلامة النتائج. الحقول المسموح بها أثناء التشغيل (الوصف، تعليمات المشاركة، تاريخ النهاية، الحد الأدنى لعرض النتائج) متاحة من زر «تعديل» في رأس الصفحة."
                   : "لا يمكن تعديل حملة مغلقة أو مؤرشفة. يمكنك نسخها لإنشاء حملة جديدة."}
               </AlertDescription>
             </Alert>
@@ -1391,7 +1391,8 @@ function PreviewTab({ campaignId }: { campaignId: string }) {
         </CardContent>
       </Card>
 
-      {preview.environment.enabled && (
+      {preview.environment.enabled &&
+        preview.environment.questions.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>أسئلة بيئة العمل</CardTitle>
@@ -1449,7 +1450,7 @@ function PreviewTab({ campaignId }: { campaignId: string }) {
         </CardContent>
       </Card>
 
-      {preview.future.enabled && (
+      {preview.future.enabled && preview.future.questions.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>أسئلة البيئة المستقبلية</CardTitle>

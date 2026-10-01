@@ -224,8 +224,8 @@ const DEFAULTS: CampaignFormValues = {
   startsAtLocal: "",
   endsAtLocal: "",
   minimumReportingThreshold: 5,
-  enableEnvironmentSurvey: true,
-  enableFutureSurvey: true,
+  enableEnvironmentSurvey: false,
+  enableFutureSurvey: false,
   allowMultipleExecutiveEvaluations: true,
   minExecutives: undefined,
   maxExecutives: undefined,
@@ -377,6 +377,9 @@ export function CampaignEditorView({
       await qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
       await qc.invalidateQueries({
         queryKey: ["admin-campaign", saved.id],
+      });
+      await qc.invalidateQueries({
+        queryKey: ["admin-campaign-readiness", saved.id],
       });
       toast({ title: "تم حفظ الحملة" });
       router.push(
@@ -943,6 +946,9 @@ function ActivateButton({
       await qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
       await qc.invalidateQueries({
         queryKey: ["admin-campaign", campaignId],
+      });
+      await qc.invalidateQueries({
+        queryKey: ["admin-campaign-readiness", campaignId],
       });
       toast({ title: "تم تفعيل الحملة" });
       router.push(

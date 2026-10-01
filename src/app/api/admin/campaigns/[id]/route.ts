@@ -213,12 +213,38 @@ const patchSchema = z
 
 const SAFE_ACTIVE_FIELDS = new Set([
   "descriptionAr",
+  "instructionsAr",
   "endsAt",
   "minimumReportingThreshold",
 ]);
 
-function changedFields(input: Record<string, unknown>): string[] {
-  return Object.keys(input);
+/**
+ * Normalize a value so DB values (0/1 ints, ISO text) and PATCH payload
+ * values (booleans, Date objects) can be compared for real equality.
+ */
+function normalizeForCompare(v: unknown): unknown {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (typeof v === "string") {
+    const t = v.trim();
+    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(t)) {
+      const d = new Date(t);
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    return t;
+  }
+  return v;
+}
+
+/** Fields whose value actually differs from what is already stored. */
+function changedFields(
+  campaign: Record<string, unknown>,
+  input: Record<string, unknown>
+): string[] {
+  return Object.keys(input).filter(
+    (k) => normalizeForCompare(input[k]) !== normalizeForCompare(campaign[k])
+  );
 }
 
 export const PATCH = apiHandler(
@@ -255,8 +281,9 @@ export const PATCH = apiHandler(
     }
 
     if (campaign.status === "active") {
-      const changed = changedFields(input);
-      const unsafe = changed.filter((k) => !SAFE_ACTIVE_FIELDS.has(k));
+      const unsafe = changedFields(campaign, input).filter(
+        (k) => !SAFE_ACTIVE_FIELDS.has(k)
+      );
       if (unsafe.length > 0) {
         return fail(MESSAGES.cannotEditActiveCampaign, 400, {
           blockedFields: unsafe,

@@ -129,6 +129,7 @@ export function CampaignDetailHeader({
   const invalidateAll = () => {
     qc.invalidateQueries({ queryKey: ["admin-campaigns"] });
     qc.invalidateQueries({ queryKey: ["admin-campaign", campaignId] });
+    qc.invalidateQueries({ queryKey: ["admin-campaign-readiness", campaignId] });
   };
 
   return (

@@ -30,6 +30,7 @@ import {
   Clock,
 } from "lucide-react";
 import { INTRO_COPY } from "@/lib/messages";
+import { envSectionEnabled, futureSectionEnabled } from "@/lib/survey-sections";
 import type { ActiveCampaign } from "./types";
 
 interface SurveyIntroProps {
@@ -59,7 +60,7 @@ export function SurveyIntro({
     {
       label: "بيئة العمل",
       done: submittedSections.environment,
-      hidden: !campaign.enableEnvironmentSurvey,
+      hidden: !envSectionEnabled(campaign),
       progress: submittedSections.environment ? "مكتمل" : "بانتظارك",
     },
     {
@@ -77,7 +78,7 @@ export function SurveyIntro({
     {
       label: "البيئة المستقبلية",
       done: submittedSections.future,
-      hidden: !campaign.enableFutureSurvey,
+      hidden: !futureSectionEnabled(campaign),
       progress: submittedSections.future ? "مكتمل" : "بانتظارك",
     },
   ].filter((p) => !p.hidden);

@@ -55,6 +55,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { MESSAGES } from "@/lib/messages";
+import { envSectionEnabled, futureSectionEnabled } from "@/lib/survey-sections";
 import { QuestionCard } from "./question-card";
 import { ExecutivePicker } from "./executive-picker";
 import { useWizardStore } from "./wizard-store";
@@ -67,10 +68,10 @@ import type {
 } from "./types";
 
 const STEPS = [
-  { key: "environment", labelAr: "بيئة العمل العامة" },
-  { key: "leadership", labelAr: "تقييم المسؤول" },
-  { key: "future", labelAr: "أولويات التحسين المستقبلية" },
-  { key: "review", labelAr: "المراجعة والإرسال" },
+  { n: 1, key: "environment", labelAr: "بيئة العمل العامة" },
+  { n: 2, key: "leadership", labelAr: "تقييم المسؤول" },
+  { n: 3, key: "future", labelAr: "أولويات التحسين المستقبلية" },
+  { n: 4, key: "review", labelAr: "المراجعة والإرسال" },
 ] as const;
 
 interface SurveyWizardProps {
@@ -121,6 +122,34 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
   const [step, setStep] = useState<number>(1);
   const [initialized, setInitialized] = useState(false);
 
+  // ─── Visible steps ───────────────────────────────────────────────────
+  // A section that is toggled off OR has no questions is never rendered:
+  // the employee skips straight past it (see `src/lib/survey-sections.ts`).
+  const visibleSteps = useMemo(
+    () =>
+      STEPS.filter((s) => {
+        if (s.key === "environment") return envSectionEnabled(campaign);
+        if (s.key === "future") return futureSectionEnabled(campaign);
+        return true;
+      }),
+    [campaign]
+  );
+  const visibleIndex = (v: number) => visibleSteps.findIndex((s) => s.n === v);
+  const clampToVisible = (v: number) => {
+    if (visibleIndex(v) >= 0) return v;
+    const next = visibleSteps.find((s) => s.n > v);
+    return (next ?? visibleSteps[0] ?? { n: 1 }).n;
+  };
+  const goNext = () => {
+    const i = visibleIndex(step);
+    const next = i < 0 ? visibleSteps[0] : visibleSteps[i + 1];
+    if (next) setStep(next.n);
+  };
+  const goBack = () => {
+    const i = visibleIndex(step);
+    if (i > 0) setStep(visibleSteps[i - 1].n);
+  };
+
   // Local answer state for the current executive evaluation (transient —
   // reset whenever the user picks a different executive).
   const [executiveAnswers, setExecutiveAnswers] = useState<
@@ -142,7 +171,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
     if (!ps) return 1;
     let s = 1;
     const envDone =
-      !campaign.enableEnvironmentSurvey || ps.environmentSubmitted;
+      !envSectionEnabled(campaign) || ps.environmentSubmitted;
     if (envDone) {
       const evaluated = new Set(ps.evaluatedExecutiveIds);
       const totalAssigned = executivesQuery.data?.executives.length ?? 0;
@@ -153,7 +182,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       const step2Done = allExecsDone || singleEvalDone;
       if (step2Done) {
         const futureDone =
-          !campaign.enableFutureSurvey || ps.futureSubmitted;
+          !futureSectionEnabled(campaign) || ps.futureSubmitted;
         s = futureDone ? 4 : 3;
       } else {
         s = 2;
@@ -165,12 +194,16 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
   // Apply the derived step once on first load (initialized=false → true).
   // After that, only advance (never move backwards) if the server's truth
   // changes — e.g., user submits future from another tab.
+  // A step that is not rendered (empty section) is never landed on.
+  if (visibleIndex(step) === -1 && visibleSteps.length > 0) {
+    setStep(visibleSteps[0].n);
+  }
   if (ps && !initialized) {
     setInitialized(true);
-    setStep(derivedStep);
+    setStep(clampToVisible(derivedStep));
   } else if (ps && initialized && derivedStep > step) {
     // Server says we should be further along than we are — bump up.
-    setStep(derivedStep);
+    setStep(clampToVisible(derivedStep));
   }
 
   // ─── beforeunload warning (in-progress answers) ──────────────────────
@@ -224,7 +257,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
         description: data?.message ?? MESSAGES.submissionSuccess,
       });
       invalidateAll();
-      setStep(2);
+      goNext();
     },
     onError: (err: Error) => {
       const status = err instanceof ApiError ? err.status : 0;
@@ -236,7 +269,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       // 409 → already submitted; refetch so the banner shows.
       if (status === 409) {
         invalidateAll();
-        setStep(2);
+        goNext();
       }
     },
   });
@@ -264,7 +297,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
         description: data?.message ?? MESSAGES.submissionSuccess,
       });
       invalidateAll();
-      setStep(4);
+      goNext();
     },
     onError: (err: Error) => {
       const status = err instanceof ApiError ? err.status : 0;
@@ -275,7 +308,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       });
       if (status === 409) {
         invalidateAll();
-        setStep(4);
+        goNext();
       }
     },
   });
@@ -364,7 +397,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
 
   // Required-but-unanswered env questions.
   const envRequiredMissing = useMemo(() => {
-    if (!campaign.enableEnvironmentSurvey) return [];
+    if (!envSectionEnabled(campaign)) return [];
     if (ps?.environmentSubmitted) return [];
     return campaign.environmentQuestions.filter(
       (q) => q.isRequired && !envAnswers[q.id]
@@ -372,13 +405,13 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
   }, [campaign, envAnswers, ps]);
 
   const envStepComplete =
-    !campaign.enableEnvironmentSurvey ||
+    !envSectionEnabled(campaign) ||
     ps?.environmentSubmitted ||
     envRequiredMissing.length === 0;
 
   // Future: required single_choice needs ≥1, multi_choice needs ≥1.
   const futureRequiredMissing = useMemo(() => {
-    if (!campaign.enableFutureSurvey) return [];
+    if (!futureSectionEnabled(campaign)) return [];
     if (ps?.futureSubmitted) return [];
     return campaign.futureQuestions.filter((q) => {
       if (!q.isRequired) return false;
@@ -388,7 +421,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
   }, [campaign, futureAnswers, ps]);
 
   const futureStepComplete =
-    !campaign.enableFutureSurvey ||
+    !futureSectionEnabled(campaign) ||
     ps?.futureSubmitted ||
     futureRequiredMissing.length === 0;
 
@@ -420,8 +453,8 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
 
   // ─── Step 4 "submit" gating ──────────────────────────────────────────
   const allDone = Boolean(
-    (!campaign.enableEnvironmentSurvey || ps?.environmentSubmitted) &&
-      (!campaign.enableFutureSurvey || ps?.futureSubmitted) &&
+    (!envSectionEnabled(campaign) || ps?.environmentSubmitted) &&
+      (!futureSectionEnabled(campaign) || ps?.futureSubmitted) &&
       (singleEvalDone ||
         noExecsToEvaluate ||
         (campaign.allowMultipleExecutiveEvaluations
@@ -431,16 +464,13 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
   const canFinish = allDone && confirmedFinal;
 
   // ─── Progress % for the Progress bar ────────────────────────────────
-  const progressPct = ((step - 1) / 4) * 100;
+  const currentVisibleIndex = visibleIndex(step);
+  const progressPct =
+    ((currentVisibleIndex < 0 ? 0 : currentVisibleIndex) /
+      Math.max(visibleSteps.length, 1)) *
+    100;
 
   // ─── Handlers ────────────────────────────────────────────────────────
-  const goNext = () => {
-    if (step < 4) setStep(step + 1);
-  };
-  const goBack = () => {
-    if (step > 1) setStep(step - 1);
-  };
-
   const handleEnvSubmit = () => {
     if (envRequiredMissing.length > 0) {
       toast({
@@ -524,7 +554,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       if (e.key === "ArrowLeft") {
         // In RTL, ArrowLeft = forward.
         e.preventDefault();
-        if (step < 4) {
+        if (currentVisibleIndex > -1 && currentVisibleIndex < visibleSteps.length - 1) {
           if (step === 1) {
             if (ps?.environmentSubmitted || envStepComplete) {
               handleEnvSubmit();
@@ -541,13 +571,15 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       } else if (e.key === "ArrowRight") {
         // In RTL, ArrowRight = back.
         e.preventDefault();
-        if (step > 1) goBack();
+        if (currentVisibleIndex > 0) goBack();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [
     step,
+    visibleSteps,
+    currentVisibleIndex,
     ps,
     envStepComplete,
     execStepReady,
@@ -584,10 +616,10 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
       {/* Progress indicator (spec §8.2) */}
       <div className="mx-auto max-w-3xl">
         <div className="flex items-center justify-between gap-1 mb-3">
-          {STEPS.map((s, i) => {
+          {visibleSteps.map((s, i) => {
             const n = i + 1;
-            const isCurrent = step === n;
-            const isDone = step > n;
+            const isCurrent = step === s.n;
+            const isDone = step > s.n;
             const isUpcoming = !isCurrent && !isDone;
             return (
               <div
@@ -623,7 +655,7 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
                   </span>
                   <span className="hidden sm:inline">{s.labelAr}</span>
                 </div>
-                {n < 4 ? (
+                {n < visibleSteps.length ? (
                   <div
                     className={
                       "h-0.5 flex-1 rounded-full transition-colors duration-300 " +
@@ -713,14 +745,15 @@ export function SurveyWizard({ campaign, onFinish, onCancel }: SurveyWizardProps
         </motion.div>
       </AnimatePresence>
 
-      {/* Bottom navigation (steps 1, 2, 3) */}
-      {step < 4 ? (
+      {/* Bottom navigation (steps before review) */}
+      {currentVisibleIndex > -1 &&
+      currentVisibleIndex < visibleSteps.length - 1 ? (
         <div className="flex items-center justify-between gap-3 mx-auto max-w-3xl pt-2">
           <Button
             variant="ghost"
             size="default"
             onClick={goBack}
-            disabled={step === 1}
+            disabled={currentVisibleIndex === 0}
             className="gap-1.5 min-h-[44px]"
           >
             <ArrowRight className="h-4 w-4" />
@@ -823,7 +856,7 @@ function StepEnvironment({
   onSkip: () => void;
   submitting: boolean;
 }) {
-  if (!campaign.enableEnvironmentSurvey) {
+  if (!envSectionEnabled(campaign)) {
     return (
       <StepSkippedCard
         title="قسم بيئة العمل غير مُفعّل"
@@ -1074,7 +1107,7 @@ function StepFuture({
   onSkip: () => void;
   submitting: boolean;
 }) {
-  if (!campaign.enableFutureSurvey) {
+  if (!futureSectionEnabled(campaign)) {
     return (
       <StepSkippedCard
         title="قسم البيئة المستقبلية غير مُفعّل"
@@ -1165,7 +1198,7 @@ function StepReview({
           <ReviewRow
             label="بيئة العمل"
             state={
-              !campaign.enableEnvironmentSurvey
+              !envSectionEnabled(campaign)
                 ? "skipped"
                 : environmentSubmitted
                 ? "done"
@@ -1206,7 +1239,7 @@ function StepReview({
           <ReviewRow
             label="البيئة المستقبلية"
             state={
-              !campaign.enableFutureSurvey
+              !futureSectionEnabled(campaign)
                 ? "skipped"
                 : futureSubmitted
                 ? "done"
